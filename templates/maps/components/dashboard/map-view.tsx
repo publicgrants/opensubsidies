@@ -1,4 +1,5 @@
 "use client";
+// Tier-aware rendering: country bubbles → proximity clusters → individual pins.
 
 import * as React from "react";
 import maplibregl from "maplibre-gl";
@@ -7,10 +8,25 @@ import { useTheme } from "next-themes";
 import { useGrantsStore } from "@/store/maps-store";
 import {
   funders,
+  grants as allGrants,
+  type Funder,
   type Grant,
   type GrantStatus,
   type InstrumentType,
 } from "@/mock-data/locations";
+import {
+  buildContinentBubbles,
+  buildCountryBubbles,
+  buildFunderClusterIndex,
+  CLUSTER_TIER_MAX_ZOOM,
+  CONTINENT_TIER_MAX_ZOOM,
+  COUNTRY_TIER_MAX_ZOOM,
+  featureMetricValue,
+  getVisibleClusters,
+  isClusterFeature,
+  tierForZoom,
+} from "@/lib/clustering";
+import { createClusterMarkerElement } from "@/components/dashboard/map-cluster-marker";
 
 const MAP_STYLES = {
   light: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
@@ -145,6 +161,7 @@ export function MapView() {
     userLocation,
     setUserLocation,
     getFilteredGrants,
+    metricMode,
   } = useGrantsStore();
 
   const getMapStyleUrl = React.useCallback(() => {
@@ -155,6 +172,31 @@ export function MapView() {
   }, [mapStyle, resolvedTheme]);
 
   const grants = getFilteredGrants();
+
+  // Continent / country / cluster tiers aggregate over the WHOLE catalog
+  // (all funders + all grants), so the bubble counts represent the provider
+  // universe regardless of the list filters. The pin tier (zoom > 10.5) still
+  // renders one pin per grant from the filtered grants list. The active
+  // `metricMode` (providers / schemes / funding) decides what each bubble
+  // counts — the index carries per-funder scheme/funding sums so switching
+  // mode is a cheap re-read, not a rebuild.
+  const clusterIndex = React.useMemo(
+    () => buildFunderClusterIndex(funders, allGrants),
+    [],
+  );
+  const countryBubbles = React.useMemo(
+    () => buildCountryBubbles(funders, allGrants, metricMode),
+    [metricMode],
+  );
+  const continentBubbles = React.useMemo(
+    () => buildContinentBubbles(funders, allGrants, metricMode),
+    [metricMode],
+  );
+  const funderById = React.useMemo(() => {
+    const m = new Map<string, Funder>();
+    for (const f of funders) m.set(f.id, f);
+    return m;
+  }, []);
 
   // Resolve user location once, but DON'T re-center the map — OpenSubsidies
   // is a global dashboard that should default to a world view.
@@ -272,15 +314,12 @@ export function MapView() {
     userMarkerRef.current = marker;
   }, [userLocation]);
 
-  // Grant markers
-  React.useEffect(() => {
-    if (!mapRef.current) return;
-
-    markersRef.current.forEach((m) => m.remove());
-    markersRef.current.clear();
-
-    grants.forEach((grant) => {
-      const funder = funders.find((f) => f.id === grant.funderId);
+  // Per-grant pin factory — shared by tier='pin' and the unclustered-point
+  // case inside tier='cluster'. Keeps the existing hover/select/popup
+  // behavior intact and centralized.
+  const buildGrantPinElement = React.useCallback(
+    (grant: Grant) => {
+      const funder = funderById.get(grant.funderId);
       const pinColor = INSTRUMENT_COLOR[grant.instrumentType];
       const statusColor = STATUS_COLOR[grant.status];
       const isSelected = selectedGrantId === grant.id;
@@ -432,13 +471,141 @@ export function MapView() {
 
       el.addEventListener("mouseleave", () => closePopup());
 
+      return el;
+    },
+    [funderById, selectGrant, selectedGrantId, closePopup],
+  );
+
+  // Tier-aware marker rendering.
+  // Re-runs on grants change, selection change, zoom change, or pan
+  // (pan only matters for the cluster tier's bbox query — cheap otherwise).
+  React.useEffect(() => {
+    if (!mapRef.current) return;
+
+    markersRef.current.forEach((m) => m.remove());
+    markersRef.current.clear();
+
+    const map = mapRef.current;
+    const tier = tierForZoom(mapZoom);
+
+    if (tier === "continent") {
+      continentBubbles.forEach((b) => {
+        const el = createClusterMarkerElement({
+          count: b.count,
+          label: b.name,
+          variant: "country",
+          onClick: () => {
+            setMapCenter({ lat: b.lat, lng: b.lng });
+            setMapZoom(Math.max(mapZoom, CONTINENT_TIER_MAX_ZOOM + 0.5));
+          },
+        });
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([b.lng, b.lat])
+          .addTo(map);
+        markersRef.current.set(`continent:${b.name}`, marker);
+      });
+      return;
+    }
+
+    if (tier === "country") {
+      countryBubbles.forEach((b) => {
+        const el = createClusterMarkerElement({
+          count: b.count,
+          label: b.code,
+          variant: "country",
+          onClick: () => {
+            setMapCenter({ lat: b.lat, lng: b.lng });
+            setMapZoom(Math.max(mapZoom, COUNTRY_TIER_MAX_ZOOM + 1.5));
+          },
+        });
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([b.lng, b.lat])
+          .addTo(map);
+        markersRef.current.set(`country:${b.code}`, marker);
+      });
+      return;
+    }
+
+    if (tier === "cluster") {
+      const bounds = map.getBounds();
+      const bbox: [number, number, number, number] = [
+        bounds.getWest(),
+        bounds.getSouth(),
+        bounds.getEast(),
+        bounds.getNorth(),
+      ];
+      const features = getVisibleClusters(clusterIndex, bbox, mapZoom);
+
+      features.forEach((feature) => {
+        const [lng, lat] = feature.geometry.coordinates as [number, number];
+
+        if (isClusterFeature(feature)) {
+          const clusterId = feature.properties.cluster_id;
+          const count = featureMetricValue(feature, metricMode);
+          const el = createClusterMarkerElement({
+            count,
+            variant: "cluster",
+            onClick: () => {
+              let nextZoom: number;
+              try {
+                nextZoom = clusterIndex.getClusterExpansionZoom(clusterId);
+              } catch {
+                nextZoom = mapZoom + 2;
+              }
+              setMapCenter({ lat, lng });
+              setMapZoom(
+                Math.min(18, Math.max(mapZoom + 1, nextZoom)),
+              );
+            },
+          });
+          const marker = new maplibregl.Marker({ element: el })
+            .setLngLat([lng, lat])
+            .addTo(map);
+          markersRef.current.set(`cluster:${clusterId}`, marker);
+          return;
+        }
+
+        // Unclustered point = one funder. Bubble shows the metric for that
+        // single funder (1 provider, its scheme count, or — for funding).
+        // Clicking zooms into pin tier where the funder's grants render.
+        const funderId = feature.properties.funderId;
+        const el = createClusterMarkerElement({
+          count: featureMetricValue(feature, metricMode),
+          variant: "cluster",
+          onClick: () => {
+            setMapCenter({ lat, lng });
+            setMapZoom(Math.max(mapZoom + 2, CLUSTER_TIER_MAX_ZOOM + 1));
+          },
+        });
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([lng, lat])
+          .addTo(map);
+        markersRef.current.set(`funder:${funderId}`, marker);
+      });
+      return;
+    }
+
+    // tier === 'pin': render every filtered grant as an individual pin.
+    grants.forEach((grant) => {
+      const el = buildGrantPinElement(grant);
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat([grant.coordinates.lng, grant.coordinates.lat])
-        .addTo(mapRef.current!);
-
+        .addTo(map);
       markersRef.current.set(grant.id, marker);
     });
-  }, [grants, selectedGrantId, selectGrant, closePopup]);
+  }, [
+    grants,
+    selectedGrantId,
+    mapZoom,
+    mapCenter,
+    clusterIndex,
+    countryBubbles,
+    continentBubbles,
+    metricMode,
+    buildGrantPinElement,
+    setMapCenter,
+    setMapZoom,
+  ]);
 
   // Fly to selected grant
   React.useEffect(() => {
@@ -448,7 +615,7 @@ export function MapView() {
     isAnimatingRef.current = true;
     mapRef.current.flyTo({
       center: [grant.coordinates.lng, grant.coordinates.lat],
-      zoom: Math.max(mapRef.current.getZoom(), 5.5),
+      zoom: Math.max(mapRef.current.getZoom(), CLUSTER_TIER_MAX_ZOOM + 1),
       essential: true,
     });
   }, [selectedGrantId, grants]);

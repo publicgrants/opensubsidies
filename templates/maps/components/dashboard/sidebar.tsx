@@ -44,10 +44,24 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useGrantsStore } from "@/store/maps-store";
+import { useGrantsStore, type MetricMode } from "@/store/maps-store";
 import { funders } from "@/mock-data/locations";
 import type { FunderType, InstrumentType } from "@/mock-data/locations";
 import { cn } from "@/lib/utils";
+
+const METRIC_OPTIONS: { id: MetricMode; label: string; hint?: string }[] = [
+  { id: "providers", label: "Providers" },
+  { id: "schemes", label: "Schemes" },
+  {
+    id: "funding",
+    label: "Funding",
+    hint: "No funding data yet — disbursements to companies aren't tracked in the catalog.",
+  },
+];
+
+function fmtBadge(n: number | null): string {
+  return n === null ? "—" : n.toLocaleString();
+}
 
 const navItems = [
   { id: "all", title: "Discover Grants", icon: Globe2, href: "/" },
@@ -93,6 +107,8 @@ export function LocationsSidebar({
     selectedInstrumentTypes,
     toggleInstrumentType,
     getRecentGrants,
+    metricMode,
+    setMetricMode,
   } = useGrantsStore();
 
   const savedCount = grants.filter((g) => g.isSaved).length;
@@ -117,6 +133,29 @@ export function LocationsSidebar({
     return counts;
   }, [grants, funderCountryById]);
 
+  const fundersByCountry = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const f of funders) counts.set(f.country, (counts.get(f.country) ?? 0) + 1);
+    return counts;
+  }, []);
+
+  // Count shown on each country chip, per active metric. funding = null ("—").
+  const metricFor = React.useCallback(
+    (code: string): number | null => {
+      if (metricMode === "funding") return null;
+      if (metricMode === "providers") return fundersByCountry.get(code) ?? 0;
+      return grantsByCountry.get(code) ?? 0;
+    },
+    [metricMode, fundersByCountry, grantsByCountry],
+  );
+
+  const allCountriesMetric: number | null =
+    metricMode === "funding"
+      ? null
+      : metricMode === "providers"
+        ? funders.length
+        : grants.length;
+
   const countryOptions = React.useMemo(() => {
     const byCode = new Map<string, { code: string; name: string }>();
     for (const f of funders) {
@@ -124,13 +163,17 @@ export function LocationsSidebar({
         byCode.set(f.country, { code: f.country, name: f.countryName });
       }
     }
+    // Sort by the active metric (providers / schemes). Funding has no data,
+    // so fall back to scheme counts for a stable, meaningful ordering.
+    const sortMap =
+      metricMode === "providers" ? fundersByCountry : grantsByCountry;
     return [...byCode.values()].sort((a, b) => {
-      const ca = grantsByCountry.get(a.code) ?? 0;
-      const cb = grantsByCountry.get(b.code) ?? 0;
+      const ca = sortMap.get(a.code) ?? 0;
+      const cb = sortMap.get(b.code) ?? 0;
       if (cb !== ca) return cb - ca;
       return a.name.localeCompare(b.name);
     });
-  }, [grantsByCountry]);
+  }, [grantsByCountry, fundersByCountry, metricMode]);
 
   const grantsByInstrument = React.useMemo(() => {
     const counts = new Map<InstrumentType, number>();
@@ -195,6 +238,39 @@ export function LocationsSidebar({
       </SidebarHeader>
 
       <SidebarContent className="px-2.5">
+        {/* Metric mode — switches every count in the UI between grant
+            providers, grant schemes, and grant funding. */}
+        <SidebarGroup className="p-0">
+          <SidebarGroupContent>
+            <div
+              role="group"
+              aria-label="Count metric"
+              className="grid grid-cols-3 gap-0.5 rounded-lg bg-sidebar-accent p-0.5"
+            >
+              {METRIC_OPTIONS.map((opt) => {
+                const active = metricMode === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setMetricMode(opt.id)}
+                    title={opt.hint}
+                    aria-pressed={active}
+                    className={cn(
+                      "rounded-md px-1 py-1 text-[11px] font-medium transition-colors",
+                      active
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
         {/* Primary navigation */}
         <SidebarGroup className="p-0">
           <SidebarGroupContent>
@@ -248,10 +324,11 @@ export function LocationsSidebar({
                   <Globe2 className="size-3.5" />
                   <span className="text-sm">All countries</span>
                 </SidebarMenuButton>
-                <SidebarMenuBadge>{grants.length}</SidebarMenuBadge>
+                <SidebarMenuBadge>{fmtBadge(allCountriesMetric)}</SidebarMenuBadge>
               </SidebarMenuItem>
               {countryOptions.map((c) => {
-                const count = grantsByCountry.get(c.code) ?? 0;
+                const count = metricFor(c.code);
+                const showBadge = count === null || count > 0;
                 return (
                   <SidebarMenuItem key={c.code}>
                     <SidebarMenuButton
@@ -264,7 +341,9 @@ export function LocationsSidebar({
                       </span>
                       <span className="text-sm">{c.name}</span>
                     </SidebarMenuButton>
-                    {count > 0 && <SidebarMenuBadge>{count}</SidebarMenuBadge>}
+                    {showBadge && (
+                      <SidebarMenuBadge>{fmtBadge(count)}</SidebarMenuBadge>
+                    )}
                   </SidebarMenuItem>
                 );
               })}

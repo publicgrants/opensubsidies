@@ -23,6 +23,7 @@ import {
   Building2,
   ScrollText,
   ChevronRight,
+  ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -43,6 +44,11 @@ import {
   type InstrumentType,
 } from "@/mock-data/locations";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "usehooks-ts";
 
@@ -218,6 +224,9 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
     isPanelVisible,
     setPanelVisible,
     getGlobalStats,
+    metricMode,
+    isGrantsListExpanded,
+    setGrantsListExpanded,
   } = useGrantsStore();
 
   const isDesktop = useMediaQuery("(min-width: 640px)");
@@ -287,13 +296,30 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
     );
   }
 
-  const subtitle =
-    mode === "all"
-      ? `${grants.length.toLocaleString()} ${grants.length === 1 ? config.subtitleSingular : config.subtitlePlural}`
-      : `${grants.length} ${grants.length === 1 ? config.subtitleSingular : config.subtitlePlural}`;
+  let subtitle: string;
+  if (mode === "all") {
+    if (metricMode === "providers") {
+      subtitle = `${funders.length.toLocaleString()} grant providers`;
+    } else if (metricMode === "funding") {
+      subtitle = "No funding data yet — disbursements not tracked";
+    } else {
+      subtitle = `${grants.length.toLocaleString()} ${grants.length === 1 ? config.subtitleSingular : config.subtitlePlural}`;
+    }
+  } else {
+    subtitle = `${grants.length} ${grants.length === 1 ? config.subtitleSingular : config.subtitlePlural}`;
+  }
+
+  // When the grants list is collapsed, release the bottom anchor so the panel
+  // shrinks to its header + filters and the map below becomes interactive.
+  const listExpanded = isGrantsListExpanded;
 
   return (
-    <div className="absolute left-4 top-4 bottom-4 z-20 flex flex-col bg-background rounded-2xl dash-panel border overflow-hidden w-80 sm:w-[420px]">
+    <div
+      className={cn(
+        "absolute left-4 top-4 z-20 flex flex-col bg-background rounded-2xl dash-panel border overflow-hidden w-80 sm:w-[420px]",
+        listExpanded ? "bottom-4" : "max-h-[calc(100%-2rem)]",
+      )}
+    >
       {/* Header */}
       <div className="px-3 pt-3 pb-2 border-b">
         <div className="flex items-start justify-between mb-2">
@@ -480,10 +506,25 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
         </div>
       </div>
 
-      {/* List / detail */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto">
-        <div className="p-2 space-y-2">
-          {grants.length === 0 ? (
+      {/* Collapsible list / detail — collapse to free the map underneath */}
+      <Collapsible
+        open={listExpanded}
+        onOpenChange={setGrantsListExpanded}
+        className={cn("flex flex-col min-h-0", listExpanded && "flex-1")}
+      >
+        <CollapsibleTrigger className="flex items-center gap-1.5 w-full px-3 py-1.5 border-b text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors">
+          {listExpanded ? (
+            <ChevronDown className="size-3.5" />
+          ) : (
+            <ChevronRight className="size-3.5" />
+          )}
+          <span>{mode === "all" ? "Discovered grants" : config.title}</span>
+          <span className="ml-auto tabular-nums">{grants.length}</span>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="flex-1 min-h-0 overflow-hidden data-[state=closed]:hidden">
+          <div ref={scrollContainerRef} className="h-full overflow-y-auto">
+            <div className="p-2 space-y-2">
+              {grants.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-14 text-center px-4">
               <EmptyIcon className="size-8 text-muted-foreground mb-2" />
               <p className="text-sm font-medium">{config.emptyTitle}</p>
@@ -529,8 +570,10 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
               );
             })
           )}
-        </div>
-      </div>
+            </div>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }

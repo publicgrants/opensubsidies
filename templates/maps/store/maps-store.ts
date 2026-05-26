@@ -24,6 +24,12 @@ import {
 type ViewMode = "map" | "list" | "split";
 type MapStyle = "default" | "streets" | "outdoors" | "satellite";
 
+// Which metric every count in the UI reflects — chosen via the sidebar toggle.
+// "funding" is wired through the whole stack but renders "—" until the catalog
+// gains a disbursement field (the catalog tracks programme metadata, not
+// amounts actually awarded to companies).
+export type MetricMode = "providers" | "schemes" | "funding";
+
 export type GrantSortBy =
   | "deadline-soonest"
   | "funding-largest"
@@ -63,6 +69,8 @@ interface GrantsState {
   userLocation: { lat: number; lng: number } | null;
   isPanelVisible: boolean;
   viewMode: ViewMode;
+  metricMode: MetricMode;
+  isGrantsListExpanded: boolean;
 
   // ── Actions ──────────────────────────────────────────────────────────────
   setSelectedCountry: (country: CountryFilter) => void;
@@ -82,6 +90,8 @@ interface GrantsState {
   setUserLocation: (l: { lat: number; lng: number } | null) => void;
   setPanelVisible: (v: boolean) => void;
   setViewMode: (m: ViewMode) => void;
+  setMetricMode: (m: MetricMode) => void;
+  setGrantsListExpanded: (v: boolean) => void;
 
   // ── Selectors ────────────────────────────────────────────────────────────
   getFilteredGrants: () => Grant[];
@@ -138,6 +148,8 @@ export const useGrantsStore = create<GrantsState>((set, get) => ({
   userLocation: null,
   isPanelVisible: true,
   viewMode: "split",
+  metricMode: "schemes",
+  isGrantsListExpanded: true,
 
   setSelectedCountry: (country) => {
     const state = get();
@@ -209,6 +221,8 @@ export const useGrantsStore = create<GrantsState>((set, get) => ({
   setUserLocation: (l) => set({ userLocation: l }),
   setPanelVisible: (v) => set({ isPanelVisible: v }),
   setViewMode: (m) => set({ viewMode: m }),
+  setMetricMode: (m) => set({ metricMode: m }),
+  setGrantsListExpanded: (v) => set({ isGrantsListExpanded: v }),
 
   // ── Selectors ────────────────────────────────────────────────────────────
   getFilteredGrants: () => {
