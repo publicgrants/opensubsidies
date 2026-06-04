@@ -55,7 +55,10 @@ export function MapControls() {
   const getLocationFromIP = async (): Promise<{ lat: number; lng: number } | null> => {
     try {
       const response = await fetch("https://ipapi.co/json/");
-      const data = await response.json();
+      const data = (await response.json()) as {
+        latitude?: number;
+        longitude?: number;
+      };
       if (data.latitude && data.longitude) {
         return { lat: data.latitude, lng: data.longitude };
       }

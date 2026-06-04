@@ -6,13 +6,11 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useTheme } from "next-themes";
 import { useGrantsStore } from "@/store/maps-store";
-import {
-  funders,
-  grants as allGrants,
-  type Funder,
-  type Grant,
-  type GrantStatus,
-  type InstrumentType,
+import type {
+  Funder,
+  Grant,
+  GrantStatus,
+  InstrumentType,
 } from "@/mock-data/locations";
 import {
   buildContinentBubbles,
@@ -162,6 +160,7 @@ export function MapView() {
     setUserLocation,
     getFilteredGrants,
     metricMode,
+    funders,
   } = useGrantsStore();
 
   const getMapStyleUrl = React.useCallback(() => {
@@ -181,22 +180,22 @@ export function MapView() {
   // counts — the index carries per-funder scheme/funding sums so switching
   // mode is a cheap re-read, not a rebuild.
   const clusterIndex = React.useMemo(
-    () => buildFunderClusterIndex(funders, allGrants),
-    [],
+    () => buildFunderClusterIndex(funders),
+    [funders],
   );
   const countryBubbles = React.useMemo(
-    () => buildCountryBubbles(funders, allGrants, metricMode),
-    [metricMode],
+    () => buildCountryBubbles(funders, metricMode),
+    [funders, metricMode],
   );
   const continentBubbles = React.useMemo(
-    () => buildContinentBubbles(funders, allGrants, metricMode),
-    [metricMode],
+    () => buildContinentBubbles(funders, metricMode),
+    [funders, metricMode],
   );
   const funderById = React.useMemo(() => {
     const m = new Map<string, Funder>();
     for (const f of funders) m.set(f.id, f);
     return m;
-  }, []);
+  }, [funders]);
 
   // Resolve user location once, but DON'T re-center the map — OpenSubsidies
   // is a global dashboard that should default to a world view.
@@ -204,7 +203,10 @@ export function MapView() {
     const getLocationFromIP = async () => {
       try {
         const response = await fetch("https://ipapi.co/json/");
-        const data = await response.json();
+        const data = (await response.json()) as {
+          latitude?: number;
+          longitude?: number;
+        };
         if (data.latitude && data.longitude) {
           setUserLocation({ lat: data.latitude, lng: data.longitude });
         }

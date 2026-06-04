@@ -1,33 +1,27 @@
 // =============================================================================
 // OpenSubsidies — Global Grant Intelligence Store
 // =============================================================================
-// Filename is preserved (`store/maps-store.ts`) for compatibility, but this
-// store is the central state container for the OpenSubsidies dashboard:
-// grants, country / funder-type / instrument-type / application-mode
-// filters, search, sort modes, the user's watchlist (favorites) and recently
-// viewed grants, plus the map view-state (center, zoom, style) and the
-// user's geolocation.
+// Server-side data model: a one-time aggregate (every funder + global stats)
+// drives the globe tiers and sidebar counts; the grant list/pins come from
+// server-filtered, paginated pages (/api/grants); saved + recently-viewed are
+// backed by a client-side cache of grants the user has loaded/opened.
 // =============================================================================
 
 import { create } from "zustand";
-import {
-  grants as initialGrants,
-  funders as allFunders,
-  type Grant,
-  type GrantStatus,
-  type FunderType,
-  type Funder,
-  type InstrumentType,
-  type ApplicationMode,
+import { fetchAggregate, fetchGrantsPage } from "@/mock-data/locations";
+import type {
+  Grant,
+  GrantStatus,
+  FunderType,
+  Funder,
+  InstrumentType,
+  ApplicationMode,
+  GlobalStats,
 } from "@/mock-data/locations";
 
 type ViewMode = "map" | "list" | "split";
 type MapStyle = "default" | "streets" | "outdoors" | "satellite";
 
-// Which metric every count in the UI reflects — chosen via the sidebar toggle.
-// "funding" is wired through the whole stack but renders "—" until the catalog
-// gains a disbursement field (the catalog tracks programme metadata, not
-// amounts actually awarded to companies).
 export type MetricMode = "providers" | "schemes" | "funding";
 
 export type GrantSortBy =
@@ -40,16 +34,37 @@ export type GrantSortBy =
 
 export type FundingSizeBucket =
   | "any"
-  | "micro" // <100K
-  | "small" // 100K–500K
-  | "mid" // 500K–2M
-  | "large" // 2M–10M
-  | "mega"; // >10M
+  | "micro"
+  | "small"
+  | "mid"
+  | "large"
+  | "mega";
 
 export type CountryFilter = "all" | string;
 
+const PAGE_SIZE = 300;
+const EMPTY_STATS: GlobalStats = {
+  totalGrants: 0,
+  openNow: 0,
+  closingSoon: 0,
+  upcomingCount: 0,
+  countriesCovered: 0,
+  fundersIndexed: 0,
+};
+
 interface GrantsState {
-  grants: Grant[];
+  // Data
+  funders: Funder[]; // aggregate — every funder, with coords + scheme count
+  stats: GlobalStats;
+  grants: Grant[]; // current server-filtered page
+  total: number; // total matching the current filters
+  grantCache: Map<string, Grant>; // every grant loaded this session
+  savedIds: Set<string>;
+  recentIds: string[]; // most-recent-first
+  loaded: boolean; // aggregate loaded
+  loading: boolean;
+  grantsLoading: boolean; // a page fetch is in flight
+  loadError: string | null;
 
   // Filters
   selectedCountry: CountryFilter;
@@ -72,7 +87,9 @@ interface GrantsState {
   metricMode: MetricMode;
   isGrantsListExpanded: boolean;
 
-  // ── Actions ──────────────────────────────────────────────────────────────
+  // ── Actions ──
+  initialize: () => Promise<void>;
+  refetchGrants: () => Promise<void>;
   setSelectedCountry: (country: CountryFilter) => void;
   toggleInstrumentType: (t: InstrumentType) => void;
   clearInstrumentTypes: () => void;
@@ -93,44 +110,34 @@ interface GrantsState {
   setMetricMode: (m: MetricMode) => void;
   setGrantsListExpanded: (v: boolean) => void;
 
-  // ── Selectors ────────────────────────────────────────────────────────────
+  // ── Selectors ──
   getFilteredGrants: () => Grant[];
   getSavedGrants: () => Grant[];
   getRecentGrants: () => Grant[];
-  getGlobalStats: () => {
-    totalGrants: number;
-    openNow: number;
-    closingSoon: number;
-    upcomingCount: number;
-    countriesCovered: number;
-    fundersIndexed: number;
-  };
-}
-
-function inFundingBucket(grant: Grant, bucket: FundingSizeBucket): boolean {
-  if (bucket === "any") return true;
-  const max = grant.maxAmount;
-  if (max === null) return false; // unknown amounts excluded from specific buckets
-  switch (bucket) {
-    case "micro":
-      return max < 100_000;
-    case "small":
-      return max >= 100_000 && max < 500_000;
-    case "mid":
-      return max >= 500_000 && max < 2_000_000;
-    case "large":
-      return max >= 2_000_000 && max < 10_000_000;
-    case "mega":
-      return max >= 10_000_000;
-  }
+  getGlobalStats: () => GlobalStats;
 }
 
 function funderById(funders: Funder[], id: string): Funder | undefined {
   return funders.find((f) => f.id === id);
 }
 
-export const useGrantsStore = create<GrantsState>((set, get) => ({
-  grants: initialGrants,
+export const useGrantsStore = create<GrantsState>((set, get) => {
+  // Race guard for paginated fetches (latest request wins) + search debounce.
+  // Closure-scoped (not module-level) so they live with the store instance.
+  let reqSeq = 0;
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  return {
+  funders: [],
+  stats: EMPTY_STATS,
+  grants: [],
+  total: 0,
+  grantCache: new Map(),
+  savedIds: new Set(),
+  recentIds: [],
+  loaded: false,
+  loading: false,
+  grantsLoading: false,
+  loadError: null,
 
   selectedCountry: "all",
   selectedInstrumentTypes: [],
@@ -151,66 +158,158 @@ export const useGrantsStore = create<GrantsState>((set, get) => ({
   metricMode: "schemes",
   isGrantsListExpanded: true,
 
+  initialize: async () => {
+    if (get().loaded || get().loading) return;
+    set({ loading: true, loadError: null });
+    try {
+      const { funders, stats } = await fetchAggregate();
+      set({ funders, stats, loaded: true, loading: false });
+      await get().refetchGrants();
+    } catch (e) {
+      set({
+        loading: false,
+        loadError: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  refetchGrants: async () => {
+    const s = get();
+    if (!s.loaded) return;
+    const seq = ++reqSeq;
+    set({ grantsLoading: true });
+    try {
+      const { grants, total } = await fetchGrantsPage({
+        country: s.selectedCountry,
+        instrumentTypes: s.selectedInstrumentTypes,
+        statuses: s.selectedStatuses,
+        funderTypes: s.selectedFunderTypes,
+        applicationMode: s.selectedApplicationMode,
+        fundingSize: s.fundingSize,
+        q: s.searchQuery,
+        sortBy: s.sortBy,
+        page: 0,
+        pageSize: PAGE_SIZE,
+      });
+      if (seq !== reqSeq) return; // a newer request superseded this one
+      const saved = get().savedIds;
+      const cache = new Map(get().grantCache);
+      const withSaved = grants.map((g) => {
+        const merged = { ...g, isSaved: saved.has(g.id) };
+        cache.set(g.id, merged);
+        return merged;
+      });
+      set({ grants: withSaved, total, grantsLoading: false, grantCache: cache });
+    } catch {
+      if (seq === reqSeq) set({ grantsLoading: false });
+    }
+  },
+
   setSelectedCountry: (country) => {
     const state = get();
     const next: Partial<GrantsState> = { selectedCountry: country };
     if (state.selectedGrantId && country !== "all") {
-      const g = state.grants.find((x) => x.id === state.selectedGrantId);
+      const g = state.grantCache.get(state.selectedGrantId);
       if (g) {
-        const f = funderById(allFunders, g.funderId);
+        const f = funderById(state.funders, g.funderId);
         if (!f || f.country !== country) next.selectedGrantId = null;
       }
     }
     set(next);
+    void get().refetchGrants();
   },
 
-  toggleInstrumentType: (t) =>
+  toggleInstrumentType: (t) => {
     set((s) => ({
       selectedInstrumentTypes: s.selectedInstrumentTypes.includes(t)
         ? s.selectedInstrumentTypes.filter((x) => x !== t)
         : [...s.selectedInstrumentTypes, t],
-    })),
+    }));
+    void get().refetchGrants();
+  },
 
-  clearInstrumentTypes: () => set({ selectedInstrumentTypes: [] }),
+  clearInstrumentTypes: () => {
+    set({ selectedInstrumentTypes: [] });
+    void get().refetchGrants();
+  },
 
-  toggleStatus: (status) =>
+  toggleStatus: (status) => {
     set((s) => ({
       selectedStatuses: s.selectedStatuses.includes(status)
         ? s.selectedStatuses.filter((x) => x !== status)
         : [...s.selectedStatuses, status],
-    })),
+    }));
+    void get().refetchGrants();
+  },
 
-  toggleFunderType: (t) =>
+  toggleFunderType: (t) => {
     set((s) => ({
       selectedFunderTypes: s.selectedFunderTypes.includes(t)
         ? s.selectedFunderTypes.filter((x) => x !== t)
         : [...s.selectedFunderTypes, t],
-    })),
+    }));
+    void get().refetchGrants();
+  },
 
-  setSelectedApplicationMode: (m) => set({ selectedApplicationMode: m }),
-  setFundingSize: (b) => set({ fundingSize: b }),
-  setSearchQuery: (q) => set({ searchQuery: q }),
-  setSortBy: (s) => set({ sortBy: s }),
+  setSelectedApplicationMode: (m) => {
+    set({ selectedApplicationMode: m });
+    void get().refetchGrants();
+  },
+
+  setFundingSize: (b) => {
+    set({ fundingSize: b });
+    void get().refetchGrants();
+  },
+
+  setSearchQuery: (q) => {
+    set({ searchQuery: q });
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => void get().refetchGrants(), 300);
+  },
+
+  setSortBy: (s) => {
+    set({ sortBy: s });
+    void get().refetchGrants();
+  },
 
   toggleSaved: (grantId) =>
-    set((s) => ({
-      grants: s.grants.map((g) =>
-        g.id === grantId ? { ...g, isSaved: !g.isSaved } : g,
-      ),
-    })),
+    set((s) => {
+      const savedIds = new Set(s.savedIds);
+      if (savedIds.has(grantId)) savedIds.delete(grantId);
+      else savedIds.add(grantId);
+      const isSaved = savedIds.has(grantId);
+      const grantCache = new Map(s.grantCache);
+      const cached = grantCache.get(grantId);
+      if (cached) grantCache.set(grantId, { ...cached, isSaved });
+      const grants = s.grants.map((g) =>
+        g.id === grantId ? { ...g, isSaved } : g,
+      );
+      return { savedIds, grantCache, grants };
+    }),
 
   selectGrant: (grantId) =>
     set((s) => {
       if (grantId && grantId !== s.selectedGrantId) {
         const today = new Date().toISOString().slice(0, 10);
-        return {
-          selectedGrantId: grantId,
-          grants: s.grants.map((g) =>
-            g.id === grantId
-              ? { ...g, viewCount: g.viewCount + 1, lastViewed: today }
-              : g,
-          ),
-        };
+        const grantCache = new Map(s.grantCache);
+        const cached = grantCache.get(grantId);
+        if (cached) {
+          grantCache.set(grantId, {
+            ...cached,
+            viewCount: cached.viewCount + 1,
+            lastViewed: today,
+          });
+        }
+        const recentIds = [
+          grantId,
+          ...s.recentIds.filter((id) => id !== grantId),
+        ].slice(0, 50);
+        const grants = s.grants.map((g) =>
+          g.id === grantId
+            ? { ...g, viewCount: g.viewCount + 1, lastViewed: today }
+            : g,
+        );
+        return { selectedGrantId: grantId, grantCache, recentIds, grants };
       }
       return { selectedGrantId: grantId };
     }),
@@ -224,132 +323,52 @@ export const useGrantsStore = create<GrantsState>((set, get) => ({
   setMetricMode: (m) => set({ metricMode: m }),
   setGrantsListExpanded: (v) => set({ isGrantsListExpanded: v }),
 
-  // ── Selectors ────────────────────────────────────────────────────────────
-  getFilteredGrants: () => {
-    const s = get();
-    let out = [...s.grants];
-
-    if (s.selectedCountry !== "all") {
-      out = out.filter((g) => {
-        const f = funderById(allFunders, g.funderId);
-        return f?.country === s.selectedCountry;
-      });
-    }
-    if (s.selectedInstrumentTypes.length > 0) {
-      out = out.filter((g) => s.selectedInstrumentTypes.includes(g.instrumentType));
-    }
-    if (s.selectedStatuses.length > 0) {
-      out = out.filter((g) => s.selectedStatuses.includes(g.status));
-    }
-    if (s.selectedFunderTypes.length > 0) {
-      out = out.filter((g) => {
-        const f = funderById(allFunders, g.funderId);
-        return f ? s.selectedFunderTypes.includes(f.type) : false;
-      });
-    }
-    if (s.selectedApplicationMode !== "all") {
-      out = out.filter((g) => g.applicationMode === s.selectedApplicationMode);
-    }
-    if (s.fundingSize !== "any") {
-      out = out.filter((g) => inFundingBucket(g, s.fundingSize));
-    }
-    if (s.searchQuery) {
-      const q = s.searchQuery.toLowerCase();
-      out = out.filter((g) => {
-        const f = funderById(allFunders, g.funderId);
-        return (
-          g.name.toLowerCase().includes(q) ||
-          g.prose.toLowerCase().includes(q) ||
-          (f && f.name.toLowerCase().includes(q)) ||
-          (f && f.shortName.toLowerCase().includes(q))
-        );
-      });
-    }
-
-    out.sort((a, b) => sortCompare(a, b, s.sortBy));
-    return out;
-  },
+  // ── Selectors ──
+  // The current page is already filtered + sorted server-side.
+  getFilteredGrants: () => get().grants,
 
   getSavedGrants: () => {
     const s = get();
-    let out = s.grants.filter((g) => g.isSaved);
+    let out = [...s.grantCache.values()].filter((g) => s.savedIds.has(g.id));
     if (s.searchQuery) {
       const q = s.searchQuery.toLowerCase();
       out = out.filter(
         (g) =>
           g.name.toLowerCase().includes(q) ||
-          g.prose.toLowerCase().includes(q),
+          (g.description?.toLowerCase().includes(q) ?? false),
       );
     }
     if (s.selectedCountry !== "all") {
       out = out.filter((g) => {
-        const f = funderById(allFunders, g.funderId);
+        const f = funderById(s.funders, g.funderId);
         return f?.country === s.selectedCountry;
       });
     }
     out.sort((a, b) => sortCompare(a, b, s.sortBy));
-    return out;
+    return out.map((g) => ({ ...g, isSaved: true }));
   },
 
   getRecentGrants: () => {
     const s = get();
-    let out = [...s.grants];
-    if (s.selectedCountry !== "all") {
-      out = out.filter((g) => {
-        const f = funderById(allFunders, g.funderId);
-        return f?.country === s.selectedCountry;
-      });
-    }
-    if (s.searchQuery) {
-      const q = s.searchQuery.toLowerCase();
-      out = out.filter(
-        (g) =>
-          g.name.toLowerCase().includes(q) ||
-          g.prose.toLowerCase().includes(q),
-      );
-    }
-    // Sort by lastViewed (recent first); fall back to scheme name.
-    out = out.filter((g) => g.lastViewed);
-    out.sort((a, b) => {
-      const at = a.lastViewed ? new Date(a.lastViewed).getTime() : 0;
-      const bt = b.lastViewed ? new Date(b.lastViewed).getTime() : 0;
-      return bt - at;
-    });
-    return out.slice(0, 25);
+    return s.recentIds
+      .map((id) => s.grantCache.get(id))
+      .filter((g): g is Grant => Boolean(g))
+      .slice(0, 25);
   },
 
-  getGlobalStats: () => {
-    const s = get();
-    const total = s.grants.length;
-    const openNow = s.grants.filter(
-      (g) => g.status === "open" || g.status === "closing-soon",
-    ).length;
-    const closingSoon = s.grants.filter((g) => g.status === "closing-soon").length;
-    const upcoming = s.grants.filter((g) => g.status === "upcoming").length;
-    const countrySet = new Set<string>();
-    allFunders.forEach((f) => countrySet.add(f.country));
-    return {
-      totalGrants: total,
-      openNow,
-      closingSoon,
-      upcomingCount: upcoming,
-      countriesCovered: countrySet.size,
-      fundersIndexed: allFunders.length,
-    };
-  },
-}));
+  getGlobalStats: () => get().stats,
+  };
+});
 
-// Backward-compatible alias for legacy imports `useMapsStore`
+// Backward-compatible alias
 export const useMapsStore = useGrantsStore;
 
-// ── Sort comparator ─────────────────────────────────────────────────────────
+// ── Sort comparator (saved/recent are sorted client-side) ────────────────────
 const FAR_FUTURE = "9999-12-31";
 
 function sortCompare(a: Grant, b: Grant, sortBy: GrantSortBy): number {
   switch (sortBy) {
     case "deadline-soonest": {
-      // closed last; otherwise nearest deadline first. Schemes without a
-      // closesAt sort to the end of the "non-closed" group.
       const aClosed = a.status === "closed" ? 1 : 0;
       const bClosed = b.status === "closed" ? 1 : 0;
       if (aClosed !== bClosed) return aClosed - bClosed;
@@ -367,8 +386,10 @@ function sortCompare(a: Grant, b: Grant, sortBy: GrantSortBy): number {
     case "oldest": {
       const at = Date.parse(a.sourceUpdatedAt ?? "");
       const bt = Date.parse(b.sourceUpdatedAt ?? "");
-      return (Number.isFinite(at) ? at : Number.MAX_SAFE_INTEGER) -
-        (Number.isFinite(bt) ? bt : Number.MAX_SAFE_INTEGER);
+      return (
+        (Number.isFinite(at) ? at : Number.MAX_SAFE_INTEGER) -
+        (Number.isFinite(bt) ? bt : Number.MAX_SAFE_INTEGER)
+      );
     }
     case "alpha-az":
       return a.name.localeCompare(b.name);

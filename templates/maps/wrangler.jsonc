@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "opensubsidies",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-09-23",
+  // nodejs_compat is required by @opennextjs/cloudflare.
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  // D1 holds all structured grant/funder data + prose.
+  // Create the real DB with `wrangler d1 create opensubsidies-db` and paste the
+  // returned database_id below before the first REMOTE deploy. The placeholder
+  // is fine for `--local` development.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "opensubsidies-db",
+      "database_id": "0edb9664-e3a4-4a1c-a4fe-c4f778b1dc6c"
+    }
+  ],
+  // Workers AI for query/document embeddings (@cf/baai/bge-m3, 1024-dim).
+  "ai": { "binding": "AI" },
+  // Vectorize index for semantic search (cosine, 1024-dim).
+  "vectorize": [{ "binding": "VECTORIZE", "index_name": "grants-search" }]
+}

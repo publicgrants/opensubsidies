@@ -38,6 +38,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# grants-sources catalog build artifact
+# grants-sources catalog build artifacts
 /mock-data/catalog.json
+/scripts/.generated/
+
+# OpenNext / Cloudflare
+/.open-next/
+/.wrangler/
+cloudflare-env.d.ts
 

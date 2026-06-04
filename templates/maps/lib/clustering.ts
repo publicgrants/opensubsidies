@@ -2,47 +2,21 @@
 // OpenSubsidies — Zoom-driven grant-provider aggregation
 // =============================================================================
 // Four rendering tiers selected by map zoom level:
-//   • zoom < CONTINENT_TIER_MAX_ZOOM → one bubble per continent, count = funders
-//   • zoom < COUNTRY_TIER_MAX_ZOOM   → one bubble per country, count = funders
+//   • zoom < CONTINENT_TIER_MAX_ZOOM → one bubble per continent
+//   • zoom < COUNTRY_TIER_MAX_ZOOM   → one bubble per country
 //   • zoom ≤ CLUSTER_TIER_MAX_ZOOM   → proximity clusters of funders
-//   • zoom > CLUSTER_TIER_MAX_ZOOM   → individual per-grant pins (existing UI)
+//   • zoom > CLUSTER_TIER_MAX_ZOOM   → individual per-grant pins
 //
-// Continent / country / cluster tiers count GRANT PROVIDERS (funders), not
-// grant records — so countries whose funders haven't yet had their grant
-// programs populated in `grants-sources` still appear on the world view. The
-// pin tier remains per-grant: at street level you're looking at specific
-// opportunities.
-//
-// Pure module — no React, no MapLibre imports. The map component owns the
-// rendering side effects.
+// Tiers are built from the AGGREGATE (every funder, with server-resolved
+// coordinates and a precomputed scheme count) — not from the grant list, which
+// is now server-paginated. Continent/country/cluster tiers count providers
+// (funders) or schemes (sum of per-funder counts) per the active metric.
 // =============================================================================
 
 import Supercluster from "supercluster";
-import type { Funder, Grant } from "@/mock-data/locations";
+import type { Funder } from "@/mock-data/locations";
 import type { MetricMode } from "@/store/maps-store";
-import {
-  COUNTRY_CENTROIDS,
-  coordsForCityOrCountry,
-  type LatLng,
-} from "@/mock-data/geo";
-
-// Funding is wired through the whole stack but has no source data yet — the
-// catalog tracks programme metadata, not amounts awarded to companies. Every
-// funding count resolves to null and renders as "—". When a disbursement
-// field lands on Grant, this is the single place to start summing it.
-export function fundingForGrant(_grant: Grant): number {
-  return 0;
-}
-
-// Count of grant schemes per funder id — shared by every tier so the numbers
-// stay consistent between bubbles and the sidebar.
-export function schemesByFunderId(grants: Grant[]): Map<string, number> {
-  const m = new Map<string, number>();
-  for (const g of grants) {
-    m.set(g.funderId, (m.get(g.funderId) ?? 0) + 1);
-  }
-  return m;
-}
+import { COUNTRY_CENTROIDS, type LatLng } from "@/mock-data/geo";
 
 export const CONTINENT_TIER_MAX_ZOOM = 2.5;
 export const COUNTRY_TIER_MAX_ZOOM = 4;
@@ -58,8 +32,6 @@ export function tierForZoom(zoom: number): RenderTier {
 }
 
 // Each continent maps to a representative centroid for bubble placement.
-// "North America" entries from the catalog merge into "Americas" — the
-// catalog uses both labels inconsistently, so we normalize here.
 export const CONTINENT_CENTROIDS: Record<string, LatLng> = {
   Europe: { lat: 54.526, lng: 15.2551 },
   Asia: { lat: 34.0479, lng: 100.6197 },
@@ -74,8 +46,7 @@ function normalizeContinent(region: string): string {
   return region;
 }
 
-// Bubble counts are `number | null`. null = "no data" (funding mode today),
-// rendered as an em-dash by the marker.
+// Bubble counts are `number | null`. null = "no data" (funding mode today).
 export type CountryBubble = {
   code: string;
   countryName: string;
@@ -99,22 +70,19 @@ function metricValue(acc: MetricAcc, mode: MetricMode): number | null {
 
 export function buildCountryBubbles(
   funders: Funder[],
-  grants: Grant[],
   mode: MetricMode,
 ): CountryBubble[] {
-  const schemes = schemesByFunderId(grants);
   const byCountry = new Map<string, MetricAcc & { name: string }>();
   for (const f of funders) {
     const code = f.country || "INTL";
     const entry = byCountry.get(code);
-    const fSchemes = schemes.get(f.id) ?? 0;
     if (entry) {
       entry.providers += 1;
-      entry.schemes += fSchemes;
+      entry.schemes += f.schemes;
     } else {
       byCountry.set(code, {
         providers: 1,
-        schemes: fSchemes,
+        schemes: f.schemes,
         funding: 0,
         name: f.countryName || code,
       });
@@ -134,7 +102,6 @@ export function buildCountryBubbles(
       lat: centroid.lat,
     });
   });
-
   return bubbles;
 }
 
@@ -147,20 +114,17 @@ export type ContinentBubble = {
 
 export function buildContinentBubbles(
   funders: Funder[],
-  grants: Grant[],
   mode: MetricMode,
 ): ContinentBubble[] {
-  const schemes = schemesByFunderId(grants);
   const byContinent = new Map<string, MetricAcc>();
   for (const f of funders) {
     const name = normalizeContinent(f.region || "Other");
-    const fSchemes = schemes.get(f.id) ?? 0;
     const entry = byContinent.get(name);
     if (entry) {
       entry.providers += 1;
-      entry.schemes += fSchemes;
+      entry.schemes += f.schemes;
     } else {
-      byContinent.set(name, { providers: 1, schemes: fSchemes, funding: 0 });
+      byContinent.set(name, { providers: 1, schemes: f.schemes, funding: 0 });
     }
   }
 
@@ -173,9 +137,8 @@ export function buildContinentBubbles(
   return bubbles;
 }
 
-// Each funder point carries its own scheme/funding contribution. Supercluster
-// sums these via the reduce option so a cluster feature exposes the totals
-// directly — no per-query recomputation.
+// Each funder point carries its own scheme contribution; Supercluster sums them
+// via reduce so a cluster feature exposes the total directly.
 export type FunderPointProps = {
   funderId: string;
   schemes: number;
@@ -206,8 +169,6 @@ export function isClusterFeature(
   );
 }
 
-// Metric value for a single visible cluster/point feature. providers = how
-// many funders it represents (point_count for clusters, 1 for a lone funder).
 export function featureMetricValue(
   feature: FunderClusterFeature,
   mode: MetricMode,
@@ -228,11 +189,7 @@ export function featureMetricValue(
   }
 }
 
-export function buildFunderClusterIndex(
-  funders: Funder[],
-  grants: Grant[],
-): FunderClusterIndex {
-  const schemes = schemesByFunderId(grants);
+export function buildFunderClusterIndex(funders: Funder[]): FunderClusterIndex {
   const index = new Supercluster<FunderPointProps, FunderClusterProps>({
     radius: 60,
     maxZoom: Math.floor(CLUSTER_TIER_MAX_ZOOM),
@@ -244,21 +201,11 @@ export function buildFunderClusterIndex(
     },
   });
 
-  const points = funders.map((f) => {
-    const c = coordsForCityOrCountry(f.hq ?? null, f.country ?? "INTL");
-    return {
-      type: "Feature" as const,
-      properties: {
-        funderId: f.id,
-        schemes: schemes.get(f.id) ?? 0,
-        funding: 0,
-      },
-      geometry: {
-        type: "Point" as const,
-        coordinates: [c.lng, c.lat],
-      },
-    };
-  });
+  const points = funders.map((f) => ({
+    type: "Feature" as const,
+    properties: { funderId: f.id, schemes: f.schemes, funding: 0 },
+    geometry: { type: "Point" as const, coordinates: [f.lng, f.lat] },
+  }));
 
   index.load(points);
   return index;

@@ -45,7 +45,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGrantsStore, type MetricMode } from "@/store/maps-store";
-import { funders } from "@/mock-data/locations";
 import type { FunderType, InstrumentType } from "@/mock-data/locations";
 import { cn } from "@/lib/utils";
 
@@ -99,7 +98,8 @@ export function LocationsSidebar({
 }: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname();
   const {
-    grants,
+    funders,
+    savedIds,
     selectedCountry,
     setSelectedCountry,
     selectedFunderTypes,
@@ -107,37 +107,30 @@ export function LocationsSidebar({
     selectedInstrumentTypes,
     toggleInstrumentType,
     getRecentGrants,
+    getGlobalStats,
     metricMode,
     setMetricMode,
   } = useGrantsStore();
 
-  const savedCount = grants.filter((g) => g.isSaved).length;
+  const stats = getGlobalStats();
+  const savedCount = savedIds.size;
   const recentCount = getRecentGrants().length;
-  const openCount = grants.filter(
-    (g) => g.status === "open" || g.status === "closing-soon",
-  ).length;
+  const openCount = stats.openNow;
 
-  const funderCountryById = React.useMemo(() => {
-    const m = new Map<string, string>();
-    for (const f of funders) m.set(f.id, f.country);
-    return m;
-  }, []);
-
+  // Per-country scheme counts come from the aggregate (each funder carries its
+  // own scheme count) — the grant list itself is now server-paginated.
   const grantsByCountry = React.useMemo(() => {
     const counts = new Map<string, number>();
-    for (const g of grants) {
-      const cc = funderCountryById.get(g.funderId);
-      if (!cc) continue;
-      counts.set(cc, (counts.get(cc) ?? 0) + 1);
-    }
+    for (const f of funders)
+      counts.set(f.country, (counts.get(f.country) ?? 0) + f.schemes);
     return counts;
-  }, [grants, funderCountryById]);
+  }, [funders]);
 
   const fundersByCountry = React.useMemo(() => {
     const counts = new Map<string, number>();
     for (const f of funders) counts.set(f.country, (counts.get(f.country) ?? 0) + 1);
     return counts;
-  }, []);
+  }, [funders]);
 
   // Count shown on each country chip, per active metric. funding = null ("—").
   const metricFor = React.useCallback(
@@ -154,7 +147,7 @@ export function LocationsSidebar({
       ? null
       : metricMode === "providers"
         ? funders.length
-        : grants.length;
+        : stats.totalGrants;
 
   const countryOptions = React.useMemo(() => {
     const byCode = new Map<string, { code: string; name: string }>();
@@ -173,15 +166,7 @@ export function LocationsSidebar({
       if (cb !== ca) return cb - ca;
       return a.name.localeCompare(b.name);
     });
-  }, [grantsByCountry, fundersByCountry, metricMode]);
-
-  const grantsByInstrument = React.useMemo(() => {
-    const counts = new Map<InstrumentType, number>();
-    for (const g of grants) {
-      counts.set(g.instrumentType, (counts.get(g.instrumentType) ?? 0) + 1);
-    }
-    return counts;
-  }, [grants]);
+  }, [funders, grantsByCountry, fundersByCountry, metricMode]);
 
   return (
     <Sidebar collapsible="offcanvas" {...props}>
@@ -395,8 +380,6 @@ export function LocationsSidebar({
               {INSTRUMENT_OPTIONS.map((it) => {
                 const Icon = it.icon;
                 const isActive = selectedInstrumentTypes.includes(it.id);
-                const count = grantsByInstrument.get(it.id) ?? 0;
-                if (count === 0) return null;
                 return (
                   <SidebarMenuItem key={it.id}>
                     <SidebarMenuButton
@@ -407,7 +390,6 @@ export function LocationsSidebar({
                       <Icon className="size-3.5" />
                       <span className="text-sm">{it.label}</span>
                     </SidebarMenuButton>
-                    <SidebarMenuBadge>{count}</SidebarMenuBadge>
                   </SidebarMenuItem>
                 );
               })}

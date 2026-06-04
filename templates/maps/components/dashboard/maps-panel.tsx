@@ -37,11 +37,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useGrantsStore, type GrantSortBy, type FundingSizeBucket } from "@/store/maps-store";
-import {
-  funders,
-  type Grant,
-  type GrantStatus,
-  type InstrumentType,
+import { fetchGrantProse } from "@/mock-data/locations";
+import type {
+  Grant,
+  GrantStatus,
+  InstrumentType,
 } from "@/mock-data/locations";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import {
@@ -227,6 +227,7 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
     metricMode,
     isGrantsListExpanded,
     setGrantsListExpanded,
+    funders,
   } = useGrantsStore();
 
   const isDesktop = useMediaQuery("(min-width: 640px)");
@@ -863,6 +864,19 @@ function GrantDetail({
   onToggleSaved: () => void;
 }) {
   const [isOpening, setIsOpening] = React.useState(false);
+  // Prose is not in the lean catalog; fetch it on demand for the detail card.
+  const [prose, setProse] = React.useState(grant.prose);
+  React.useEffect(() => {
+    setProse(grant.prose);
+    if (grant.prose) return;
+    let cancelled = false;
+    fetchGrantProse(grant.id).then((p) => {
+      if (!cancelled) setProse(p);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [grant.id, grant.prose]);
   const dl = fmtDeadline(grant.closesAt, grant.status, grant.applicationMode);
   const status = STATUS_META[grant.status];
   const amountText = fmtAmountRange(grant.minAmount, grant.maxAmount, grant.currency);
@@ -998,11 +1012,11 @@ function GrantDetail({
           )}
         </div>
 
-        {/* About this scheme — full prose */}
-        {grant.prose && grant.prose !== grant.description && (
+        {/* About this scheme — full prose (lazy-loaded) */}
+        {prose && prose !== grant.description && (
           <Section icon={ScrollText} title="About this scheme">
             <div className="text-xs leading-relaxed text-foreground/90 whitespace-pre-line">
-              {grant.prose}
+              {prose}
             </div>
           </Section>
         )}

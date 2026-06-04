@@ -1,18 +1,13 @@
-// Runtime adapter: loads the build-time catalog.json produced by
-// scripts/build-catalog.ts and shapes it into the `Grant` / `Funder`
-// types the store and components consume. Status / coordinates are
-// derived here (the catalog itself doesn't store them, per the
-// grants-sources no-assumption rule).
+// Client data layer. Server-side model: the globe + sidebar use a small
+// aggregate (every funder with coords + scheme count, fetched once); the list /
+// pins use server-filtered, paginated pages from /api/grants; grant prose is
+// fetched per-grant on demand. Status is computed server-side in SQL.
 
-import catalog from "./catalog.json";
 import { coordsForCityOrCountry, type LatLng } from "./geo";
 import type {
   ApplicationMode,
-  Catalog,
-  FunderRecord,
   FunderType,
   GrantDocument,
-  GrantRecord,
   InstrumentType,
 } from "./catalog-types";
 
@@ -20,6 +15,8 @@ export type { FunderType, InstrumentType, ApplicationMode, GrantDocument };
 
 export type GrantStatus = "open" | "upcoming" | "closing-soon" | "closed";
 
+// Funder now carries server-resolved coordinates and a scheme count so the
+// globe tiers/clustering and sidebar counts work from the aggregate alone.
 export type Funder = {
   id: string;
   name: string;
@@ -31,7 +28,9 @@ export type Funder = {
   hq: string | null;
   website: string;
   faviconUrl: string;
-  prose: string;
+  lat: number;
+  lng: number;
+  schemes: number;
 };
 
 export type Grant = {
@@ -41,7 +40,7 @@ export type Grant = {
   url: string;
   applicationUrl: string | null;
   description: string;
-  prose: string;
+  prose: string; // "" until lazily hydrated via fetchGrantProse
   coordinates: LatLng;
   address: string | null;
   status: GrantStatus;
@@ -65,87 +64,222 @@ export type Grant = {
   lastViewed?: string;
 };
 
-const CLOSING_SOON_DAYS = 30;
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+export type GlobalStats = {
+  totalGrants: number;
+  openNow: number;
+  closingSoon: number;
+  upcomingCount: number;
+  countriesCovered: number;
+  fundersIndexed: number;
+};
 
-function deriveStatus(record: GrantRecord, now: number): GrantStatus {
-  const opensAt = record.opensAt ? Date.parse(record.opensAt) : NaN;
-  const closesAt = record.closesAt ? Date.parse(record.closesAt) : NaN;
+export type GrantQuery = {
+  country?: string; // ISO code or "all"
+  instrumentTypes?: InstrumentType[];
+  statuses?: GrantStatus[];
+  funderTypes?: FunderType[];
+  applicationMode?: ApplicationMode | "all";
+  fundingSize?: string;
+  q?: string;
+  sortBy?: string;
+  page?: number;
+  pageSize?: number;
+};
 
-  if (Number.isFinite(opensAt) && opensAt > now) return "upcoming";
-  if (Number.isFinite(closesAt)) {
-    if (closesAt < now) return "closed";
-    const daysLeft = (closesAt - now) / ONE_DAY_MS;
-    if (daysLeft <= CLOSING_SOON_DAYS) return "closing-soon";
-    return "open";
+type AggFunderRow = {
+  id: string;
+  name: string;
+  short_name: string;
+  type: string;
+  country: string;
+  country_name: string;
+  region: string;
+  hq_city: string | null;
+  website: string | null;
+  favicon_url: string | null;
+  lat: number;
+  lng: number;
+  schemes: number;
+};
+
+type GrantListRow = {
+  id: string;
+  funder_id: string;
+  name: string;
+  url: string | null;
+  application_url: string | null;
+  description: string | null;
+  closes_at: string | null;
+  opens_at: string | null;
+  application_mode: string | null;
+  currency: string | null;
+  min_amount: number | null;
+  max_amount: number | null;
+  funding_rate_pct: number | null;
+  total_budget: number | null;
+  instrument_type: string | null;
+  scheme_code: string | null;
+  program: string | null;
+  documents: string | null;
+  source_updated_at: string | null;
+  state: string | null;
+  status: string;
+  f_hq_city: string | null;
+  f_lat: number;
+  f_lng: number;
+};
+
+function parseDocuments(raw: string | null): GrantDocument[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? (v as GrantDocument[]) : [];
+  } catch {
+    return [];
   }
-  // No closesAt — rolling and unknown both treated as available.
-  return "open";
 }
 
-function firstParagraph(prose: string, maxLen = 280): string {
-  if (!prose) return "";
-  const para = prose.split(/\n\s*\n/)[0]?.replace(/\s+/g, " ").trim() ?? "";
-  if (para.length <= maxLen) return para;
-  return para.slice(0, maxLen).replace(/[\s,;]+\S*$/, "") + "…";
+const FUNDER_TYPES = new Set<FunderType>([
+  "government",
+  "supranational",
+  "foundation",
+  "unknown",
+]);
+const INSTRUMENT_TYPES = new Set<InstrumentType>([
+  "grant",
+  "loan",
+  "guarantee",
+  "voucher",
+  "equity",
+  "mixed",
+  "unknown",
+]);
+const APPLICATION_MODES = new Set<ApplicationMode>([
+  "rolling",
+  "deadline",
+  "call_window",
+  "unknown",
+]);
+const GRANT_STATUSES = new Set<GrantStatus>([
+  "open",
+  "upcoming",
+  "closing-soon",
+  "closed",
+]);
+
+function asFunderType(v: string): FunderType {
+  return FUNDER_TYPES.has(v as FunderType) ? (v as FunderType) : "unknown";
+}
+function asInstrumentType(v: string | null): InstrumentType {
+  return v && INSTRUMENT_TYPES.has(v as InstrumentType)
+    ? (v as InstrumentType)
+    : "unknown";
+}
+function asApplicationMode(v: string | null): ApplicationMode {
+  return v && APPLICATION_MODES.has(v as ApplicationMode)
+    ? (v as ApplicationMode)
+    : "unknown";
+}
+function asStatus(v: string): GrantStatus {
+  return GRANT_STATUSES.has(v as GrantStatus) ? (v as GrantStatus) : "open";
 }
 
-const typedCatalog = catalog as unknown as Catalog;
-
-const funderById = new Map<string, FunderRecord>();
-for (const f of typedCatalog.funders) {
-  funderById.set(f.id, f);
-}
-
-export const funders: Funder[] = typedCatalog.funders.map((f) => ({
-  id: f.id,
-  name: f.name,
-  shortName: f.shortName,
-  type: f.funderType,
-  country: f.country,
-  countryName: f.countryName,
-  region: f.region,
-  hq: f.hqCity,
-  website: f.website,
-  faviconUrl: f.faviconUrl,
-  prose: f.prose,
-}));
-
-const now = Date.now();
-
-export const grants: Grant[] = typedCatalog.grants.map((g) => {
-  const funder = funderById.get(g.funderId);
-  const coords = coordsForCityOrCountry(
-    funder?.hqCity ?? null,
-    funder?.country ?? "INTL",
-  );
+function mapFunder(r: AggFunderRow): Funder {
   return {
-    id: g.id,
-    name: g.name,
-    funderId: g.funderId,
-    url: g.url,
-    applicationUrl: g.applicationUrl,
-    description: firstParagraph(g.prose),
-    prose: g.prose,
-    coordinates: coords,
-    address: funder?.hqCity ?? null,
-    status: deriveStatus(g, now),
-    closesAt: g.closesAt,
-    opensAt: g.opensAt,
-    applicationMode: g.applicationMode,
-    currency: g.currency,
-    minAmount: g.minAmount,
-    maxAmount: g.maxAmount,
-    fundingRatePct: g.fundingRatePct,
-    totalBudget: g.totalBudget,
-    instrumentType: g.instrumentType,
-    schemeCode: g.schemeCode,
-    program: g.program,
-    documents: g.documents,
-    sourceUpdatedAt: g.sourceUpdatedAt,
+    id: r.id,
+    name: r.name,
+    shortName: r.short_name,
+    type: asFunderType(r.type),
+    country: r.country,
+    countryName: r.country_name,
+    region: r.region,
+    hq: r.hq_city,
+    website: r.website ?? "",
+    faviconUrl: r.favicon_url ?? "",
+    lat: r.lat,
+    lng: r.lng,
+    schemes: r.schemes ?? 0,
+  };
+}
+
+function mapGrant(r: GrantListRow): Grant {
+  const lat = typeof r.f_lat === "number" ? r.f_lat : 0;
+  const lng = typeof r.f_lng === "number" ? r.f_lng : 0;
+  const coordinates =
+    lat || lng ? { lat, lng } : coordsForCityOrCountry(r.f_hq_city, "INTL");
+  return {
+    id: r.id,
+    name: r.name,
+    funderId: r.funder_id,
+    url: r.url ?? "",
+    applicationUrl: r.application_url,
+    description: r.description ?? "",
+    prose: "",
+    coordinates,
+    address: r.f_hq_city,
+    status: asStatus(r.status),
+    closesAt: r.closes_at,
+    opensAt: r.opens_at,
+    applicationMode: asApplicationMode(r.application_mode),
+    currency: r.currency,
+    minAmount: r.min_amount,
+    maxAmount: r.max_amount,
+    fundingRatePct: r.funding_rate_pct,
+    totalBudget: r.total_budget,
+    instrumentType: asInstrumentType(r.instrument_type),
+    schemeCode: r.scheme_code,
+    program: r.program,
+    documents: parseDocuments(r.documents),
+    sourceUpdatedAt: r.source_updated_at,
     isSaved: false,
     viewCount: 0,
   };
-});
+}
 
-export const generatedAt = typedCatalog.generatedAt;
+export async function fetchAggregate(): Promise<{
+  funders: Funder[];
+  stats: GlobalStats;
+}> {
+  const res = await fetch("/api/aggregate");
+  if (!res.ok) throw new Error(`Failed to load aggregate (${res.status})`);
+  const data = (await res.json()) as {
+    funders: AggFunderRow[];
+    stats: GlobalStats;
+  };
+  return { funders: data.funders.map(mapFunder), stats: data.stats };
+}
+
+export async function fetchGrantsPage(
+  query: GrantQuery,
+): Promise<{ grants: Grant[]; total: number }> {
+  const sp = new URLSearchParams();
+  if (query.country && query.country !== "all") sp.set("country", query.country);
+  if (query.instrumentTypes?.length)
+    sp.set("instrument", query.instrumentTypes.join(","));
+  if (query.statuses?.length) sp.set("status", query.statuses.join(","));
+  if (query.funderTypes?.length)
+    sp.set("funderType", query.funderTypes.join(","));
+  if (query.applicationMode && query.applicationMode !== "all")
+    sp.set("mode", query.applicationMode);
+  if (query.fundingSize && query.fundingSize !== "any")
+    sp.set("funding", query.fundingSize);
+  if (query.q && query.q.trim()) sp.set("q", query.q.trim());
+  if (query.sortBy) sp.set("sort", query.sortBy);
+  if (query.page != null) sp.set("page", String(query.page));
+  if (query.pageSize != null) sp.set("pageSize", String(query.pageSize));
+
+  const res = await fetch(`/api/grants?${sp.toString()}`);
+  if (!res.ok) throw new Error(`Failed to load grants (${res.status})`);
+  const data = (await res.json()) as { grants: GrantListRow[]; total: number };
+  return { grants: data.grants.map(mapGrant), total: data.total };
+}
+
+// Lazily fetch a single grant's prose for the detail card. Grant ids contain
+// slashes; keep them as path segments for the catch-all /api/grant/[...id].
+export async function fetchGrantProse(id: string): Promise<string> {
+  const path = id.split("/").map(encodeURIComponent).join("/");
+  const res = await fetch(`/api/grant/${path}`);
+  if (!res.ok) return "";
+  const row = (await res.json()) as { prose?: string | null };
+  return row.prose ?? "";
+}

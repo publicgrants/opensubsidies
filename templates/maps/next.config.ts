@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
 
 const nextConfig: NextConfig = {
   images: {
@@ -35,5 +36,8 @@ const nextConfig: NextConfig = {
     ],
   },
 };
+
+// Expose Cloudflare bindings (D1, AI, Vectorize) to `next dev` via OpenNext.
+initOpenNextCloudflareForDev();
 
 export default nextConfig;
