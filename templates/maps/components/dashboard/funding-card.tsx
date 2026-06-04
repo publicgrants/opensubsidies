@@ -5,6 +5,7 @@ import {
   X,
   Info,
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   ArrowLeft,
   ArrowDownToLine,
@@ -15,6 +16,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { ModeSwitchInline } from "@/components/dashboard/mode-tabs";
 import {
   Collapsible,
   CollapsibleContent,
@@ -127,15 +129,34 @@ export function FundingCard({ view }: { view: FundingView }) {
         listExpanded ? "bottom-4" : "max-h-[calc(100%-2rem)]",
       )}
     >
+      {/* Mode switch — sits with the card it controls */}
+      <ModeSwitchInline className="m-2 mb-0" />
+
       {/* Header + hero */}
       <div className="px-3 pt-3 pb-2 border-b">
         <div className="flex items-start justify-between mb-2">
-          <h2 className="font-semibold text-base flex items-center gap-2">
-            <Icon className="size-4" />
-            {title}
-          </h2>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <SidebarTrigger className="size-7 -ml-1 shrink-0" />
+            <h2 className="font-semibold text-base flex items-center gap-2">
+              <Icon className="size-4" />
+              {title}
+            </h2>
+          </div>
           <div className="flex items-center gap-1">
-            <SidebarTrigger className="size-7" />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onClick={() => setGrantsListExpanded(!listExpanded)}
+              aria-label={listExpanded ? "Collapse list" : "Expand list"}
+              title={listExpanded ? "Collapse list" : "Expand list"}
+            >
+              {listExpanded ? (
+                <ChevronUp className="size-4" />
+              ) : (
+                <ChevronDown className="size-4" />
+              )}
+            </Button>
             <Button
               variant="ghost"
               size="icon"

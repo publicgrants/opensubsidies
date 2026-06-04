@@ -24,6 +24,7 @@ import {
   ScrollText,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +53,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "usehooks-ts";
 import { FundingCard } from "@/components/dashboard/funding-card";
+import { ModeSwitchInline } from "@/components/dashboard/mode-tabs";
 
 type PanelMode = "all" | "favorites" | "recents";
 
@@ -329,20 +331,39 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
         listExpanded ? "bottom-4" : "max-h-[calc(100%-2rem)]",
       )}
     >
+      {/* Mode switch (home only) — sits with the card it controls */}
+      {mode === "all" && <ModeSwitchInline className="m-2 mb-0" />}
+
       {/* Header */}
       <div className="px-3 pt-3 pb-2 border-b">
         <div className="flex items-start justify-between mb-2">
-          <div>
-            <h2 className="font-semibold text-base flex items-center gap-2">
-              {mode === "recents" && <Clock className="size-4" />}
-              {mode === "favorites" && <Bookmark className="size-4" />}
-              {mode === "all" && <Globe2 className="size-4" />}
-              {config.title}
-            </h2>
-            <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
+          <div className="flex items-start gap-1.5 min-w-0">
+            <SidebarTrigger className="size-7 -ml-1 shrink-0" />
+            <div className="min-w-0">
+              <h2 className="font-semibold text-base flex items-center gap-2">
+                {mode === "recents" && <Clock className="size-4" />}
+                {mode === "favorites" && <Bookmark className="size-4" />}
+                {mode === "all" && <Globe2 className="size-4" />}
+                {config.title}
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
+            </div>
           </div>
           <div className="flex items-center gap-1">
-            <SidebarTrigger className="size-7" />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onClick={() => setGrantsListExpanded(!listExpanded)}
+              aria-label={listExpanded ? "Collapse list" : "Expand list"}
+              title={listExpanded ? "Collapse list" : "Expand list"}
+            >
+              {listExpanded ? (
+                <ChevronUp className="size-4" />
+              ) : (
+                <ChevronDown className="size-4" />
+              )}
+            </Button>
             <Button
               variant="ghost"
               size="icon"
