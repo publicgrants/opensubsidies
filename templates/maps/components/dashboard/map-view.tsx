@@ -16,6 +16,7 @@ import {
   buildContinentBubbles,
   buildCountryBubbles,
   buildFunderClusterIndex,
+  buildFundingCountryBubbles,
   CLUSTER_TIER_MAX_ZOOM,
   CONTINENT_TIER_MAX_ZOOM,
   COUNTRY_TIER_MAX_ZOOM,
@@ -161,6 +162,10 @@ export function MapView() {
     getFilteredGrants,
     metricMode,
     funders,
+    panelView,
+    displayCurrency,
+    fundingAggregates,
+    setFundingScope,
   } = useGrantsStore();
 
   const getMapStyleUrl = React.useCallback(() => {
@@ -196,6 +201,19 @@ export function MapView() {
     for (const f of funders) m.set(f.id, f);
     return m;
   }, [funders]);
+
+  // Funding views: money-sized country bubbles from the funding aggregate.
+  const fundingAgg =
+    panelView === "received" || panelView === "awarded"
+      ? fundingAggregates[panelView]
+      : undefined;
+  const fundingBubbles = React.useMemo(
+    () =>
+      fundingAgg
+        ? buildFundingCountryBubbles(fundingAgg.countries, displayCurrency)
+        : [],
+    [fundingAgg, displayCurrency],
+  );
 
   // Resolve user location once, but DON'T re-center the map — OpenSubsidies
   // is a global dashboard that should default to a world view.
@@ -518,6 +536,32 @@ export function MapView() {
     const map = mapRef.current;
     const tier = tierForZoom(mapZoom);
 
+    // Funding views render one consistent layer of money-sized country bubbles
+    // at every zoom, then return — the discover tiers below stay untouched, so a
+    // bug here can never break the discover map.
+    if (panelView === "received" || panelView === "awarded") {
+      fundingBubbles.forEach((b) => {
+        const el = createClusterMarkerElement({
+          count: null,
+          label: b.code,
+          variant: "country",
+          displayValue: b.displayValue,
+          magnitude: b.magnitude,
+          tone: panelView === "received" ? "received" : "awarded",
+          onClick: () => {
+            setFundingScope(b.code);
+            setMapCenter({ lat: b.lat, lng: b.lng });
+            setMapZoom(Math.max(mapZoom, COUNTRY_TIER_MAX_ZOOM - 0.5));
+          },
+        });
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([b.lng, b.lat])
+          .addTo(map);
+        markersRef.current.set(`funding:${b.code}`, marker);
+      });
+      return;
+    }
+
     if (tier === "continent") {
       continentBubbles.forEach((b) => {
         const el = createClusterMarkerElement({
@@ -635,6 +679,9 @@ export function MapView() {
     buildGrantPinElement,
     setMapCenter,
     setMapZoom,
+    panelView,
+    fundingBubbles,
+    setFundingScope,
   ]);
 
   // Fly to selected grant

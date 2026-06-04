@@ -466,3 +466,82 @@ export async function queryGrantsHybrid(
   const page = Math.max(query.page ?? 0, 0);
   return { grants: ordered.slice(page * pageSize, page * pageSize + pageSize), total };
 }
+
+// ── Funding rollups (money paid out) ─────────────────────────────────────────
+// Pre-aggregated by scripts/build-funding-rollups.ts into funding_country /
+// funding_entity / funding_coverage. Amounts are EUR (canonical) + native where
+// single-currency; the client converts EUR → display currency via lib/fx-rates.
+
+export type FundingView = "received" | "awarded";
+
+export type FundingCountryRow = {
+  view: string;
+  country: string;
+  sum_eur: number;
+  award_count: number;
+  median_eur: number | null;
+  native_currency: string | null;
+  sum_native: number | null;
+};
+
+export type FundingEntityRow = {
+  view: string;
+  scope: string;
+  entity_type: string;
+  entity_id: string;
+  entity_name: string;
+  entity_country: string | null;
+  sum_eur: number;
+  award_count: number;
+  median_eur: number | null;
+  native_currency: string | null;
+  sum_native: number | null;
+  rank: number;
+};
+
+export type FundingCoverageRow = {
+  country: string;
+  completeness: string;
+  as_of: string | null;
+};
+
+// Per-country (+ the 'ALL' global hero row) totals for one view, plus coverage
+// — drives the funding map bubbles and the hero. Single round-trip.
+export async function queryFundingAggregate(view: FundingView): Promise<{
+  countries: FundingCountryRow[];
+  coverage: FundingCoverageRow[];
+}> {
+  const db = getDb();
+  const [countries, coverage] = await Promise.all([
+    db
+      .prepare(
+        `SELECT view,country,sum_eur,award_count,median_eur,native_currency,sum_native
+         FROM funding_country WHERE view = ?`,
+      )
+      .bind(view)
+      .all<FundingCountryRow>(),
+    db
+      .prepare(`SELECT country,completeness,as_of FROM funding_coverage`)
+      .all<FundingCoverageRow>(),
+  ]);
+  return { countries: countries.results, coverage: coverage.results };
+}
+
+// Top-N recipients (received) / funders (awarded) for a scope ('ALL' or country).
+export async function queryFundingLeaderboard(
+  view: FundingView,
+  scope: string,
+  limit = 50,
+): Promise<FundingEntityRow[]> {
+  const db = getDb();
+  const n = Math.min(Math.max(limit, 1), 50);
+  const res = await db
+    .prepare(
+      `SELECT view,scope,entity_type,entity_id,entity_name,entity_country,
+              sum_eur,award_count,median_eur,native_currency,sum_native,rank
+       FROM funding_entity WHERE view = ? AND scope = ? ORDER BY rank LIMIT ?`,
+    )
+    .bind(view, scope, n)
+    .all<FundingEntityRow>();
+  return res.results;
+}

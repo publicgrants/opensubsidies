@@ -14,9 +14,10 @@
 // =============================================================================
 
 import Supercluster from "supercluster";
-import type { Funder } from "@/mock-data/locations";
+import type { Funder, FundingCountry } from "@/mock-data/locations";
 import type { MetricMode } from "@/store/maps-store";
 import { COUNTRY_CENTROIDS, type LatLng } from "@/mock-data/geo";
+import { fromEur, CURRENCY_SYMBOL, type DisplayCurrency } from "@/lib/fx-rates";
 
 export const CONTINENT_TIER_MAX_ZOOM = 2.5;
 export const COUNTRY_TIER_MAX_ZOOM = 4;
@@ -217,4 +218,52 @@ export function getVisibleClusters(
   zoom: number,
 ): FunderClusterFeature[] {
   return index.getClusters(bbox, Math.floor(zoom));
+}
+
+// ── Funding bubbles (money paid / received per country) ─────────────────────
+export type FundingBubble = {
+  code: string;
+  lat: number;
+  lng: number;
+  magnitude: number; // 0..1, √-area scaled
+  displayValue: string; // money in the chosen display currency
+};
+
+function fmtMoneyShort(v: number, cur: DisplayCurrency): string {
+  const body =
+    v >= 1_000_000_000
+      ? `${(v / 1_000_000_000).toFixed(1)}B`
+      : v >= 1_000_000
+        ? `${(v / 1_000_000).toFixed(0)}M`
+        : v >= 1_000
+          ? `${(v / 1_000).toFixed(0)}K`
+          : `${Math.round(v)}`;
+  return cur === "NOK" ? `${body} kr` : `${CURRENCY_SYMBOL[cur]}${body}`;
+}
+
+// Country funding totals → globe bubbles. √-area sizing with a soft cap at the
+// 95th percentile so one mega-country (EU/GB) doesn't flatten the rest. Skips
+// the 'ALL' global hero row.
+export function buildFundingCountryBubbles(
+  rows: FundingCountry[],
+  currency: DisplayCurrency,
+): FundingBubble[] {
+  const countries = rows.filter((r) => r.country !== "ALL" && r.sumEur > 0);
+  if (countries.length === 0) return [];
+  const sqrts = countries.map((r) => Math.sqrt(r.sumEur)).sort((a, b) => a - b);
+  const cap =
+    sqrts[Math.floor(sqrts.length * 0.95)] || sqrts[sqrts.length - 1] || 1;
+  const out: FundingBubble[] = [];
+  for (const r of countries) {
+    const centroid = COUNTRY_CENTROIDS[r.country] ?? COUNTRY_CENTROIDS.INTL;
+    if (!centroid) continue;
+    out.push({
+      code: r.country,
+      lat: centroid.lat,
+      lng: centroid.lng,
+      magnitude: Math.min(1, Math.sqrt(r.sumEur) / cap),
+      displayValue: fmtMoneyShort(fromEur(r.sumEur, currency), currency),
+    });
+  }
+  return out;
 }

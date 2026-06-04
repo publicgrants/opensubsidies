@@ -51,6 +51,7 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "usehooks-ts";
+import { FundingCard } from "@/components/dashboard/funding-card";
 
 type PanelMode = "all" | "favorites" | "recents";
 
@@ -228,6 +229,7 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
     isGrantsListExpanded,
     setGrantsListExpanded,
     funders,
+    panelView,
   } = useGrantsStore();
 
   const isDesktop = useMediaQuery("(min-width: 640px)");
@@ -295,6 +297,12 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
         <Globe2 className="size-5" />
       </Button>
     );
+  }
+
+  // Funding views morph the whole card into the funding experience (home route
+  // only — Watchlist/Recents keep the discover card).
+  if (mode === "all" && (panelView === "received" || panelView === "awarded")) {
+    return <FundingCard view={panelView} />;
   }
 
   let subtitle: string;
@@ -513,14 +521,21 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
         onOpenChange={setGrantsListExpanded}
         className={cn("flex flex-col min-h-0", listExpanded && "flex-1")}
       >
-        <CollapsibleTrigger className="flex items-center gap-1.5 w-full px-3 py-1.5 border-b text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors">
+        <CollapsibleTrigger className="flex items-center gap-2 w-full px-3 py-2 border-b text-xs font-medium hover:bg-accent/50 transition-colors">
           {listExpanded ? (
-            <ChevronDown className="size-3.5" />
+            <ChevronDown className="size-4" />
           ) : (
-            <ChevronRight className="size-3.5" />
+            <ChevronRight className="size-4" />
           )}
           <span>{mode === "all" ? "Discovered grants" : config.title}</span>
-          <span className="ml-auto tabular-nums">{grants.length}</span>
+          <span className="ml-auto inline-flex items-center gap-1.5">
+            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+              {grants.length}
+            </span>
+            <span className="text-[10px] font-medium text-muted-foreground">
+              {listExpanded ? "Hide" : "Show"}
+            </span>
+          </span>
         </CollapsibleTrigger>
         <CollapsibleContent className="flex-1 min-h-0 overflow-hidden data-[state=closed]:hidden">
           <div ref={scrollContainerRef} className="h-full overflow-y-auto">
@@ -864,6 +879,10 @@ function GrantDetail({
   onToggleSaved: () => void;
 }) {
   const [isOpening, setIsOpening] = React.useState(false);
+  // Bridge into the funding view, scoped to this grant's funder.
+  const setPanelView = useGrantsStore((s) => s.setPanelView);
+  const setFundingScope = useGrantsStore((s) => s.setFundingScope);
+  const selectFundingEntity = useGrantsStore((s) => s.selectFundingEntity);
   // Prose is not in the lean catalog; fetch it on demand for the detail card.
   const [prose, setProse] = React.useState(grant.prose);
   React.useEffect(() => {
@@ -980,6 +999,28 @@ function GrantDetail({
             <span className="capitalize">{funderType}</span>
           </span>
         </div>
+
+        {/* Bridge: jump to this funder's payouts in the funding view */}
+        <button
+          type="button"
+          onClick={() => {
+            const cc = grant.funderId.split("/")[0];
+            setPanelView("awarded");
+            setFundingScope(cc);
+            selectFundingEntity(grant.funderId);
+          }}
+          className="mb-4 flex w-full items-center justify-between gap-2 rounded-lg border bg-background/60 px-3 py-2 text-xs transition-colors hover:bg-accent"
+        >
+          <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+            <Banknote className="size-3.5" />
+            See what{" "}
+            <span className="font-medium text-foreground">
+              {funderShort || funderName}
+            </span>{" "}
+            has paid out
+          </span>
+          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+        </button>
 
         {/* Short description */}
         {grant.description && (

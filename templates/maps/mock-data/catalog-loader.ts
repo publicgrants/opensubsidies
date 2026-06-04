@@ -283,3 +283,134 @@ export async function fetchGrantProse(id: string): Promise<string> {
   const row = (await res.json()) as { prose?: string | null };
   return row.prose ?? "";
 }
+
+// ── Funding rollups (money actually paid out) ───────────────────────────────
+// Pre-aggregated in D1 (funding_country / funding_entity / funding_coverage).
+// Amounts are EUR (canonical, comparable) + native where single-currency; the
+// UI re-expresses EUR in the chosen display currency via lib/fx-rates.
+
+export type FundingView = "received" | "awarded";
+
+export type FundingCountry = {
+  view: FundingView;
+  country: string; // ISO/EU code, or "ALL" for the global hero
+  sumEur: number;
+  awardCount: number;
+  medianEur: number | null;
+  nativeCurrency: string | null;
+  sumNative: number | null;
+};
+
+export type FundingEntity = {
+  view: FundingView;
+  scope: string;
+  entityType: "recipient" | "funder";
+  entityId: string;
+  entityName: string;
+  entityCountry: string | null;
+  sumEur: number;
+  awardCount: number;
+  medianEur: number | null;
+  nativeCurrency: string | null;
+  sumNative: number | null;
+  rank: number;
+};
+
+export type FundingCoverage = {
+  country: string;
+  completeness: string; // full | partial | threshold_capped | sample
+  asOf: string | null;
+};
+
+export type FundingAggregate = {
+  countries: FundingCountry[];
+  coverage: FundingCoverage[];
+};
+
+type FundingCountryRow = {
+  view: string;
+  country: string;
+  sum_eur: number;
+  award_count: number;
+  median_eur: number | null;
+  native_currency: string | null;
+  sum_native: number | null;
+};
+type FundingEntityRow = {
+  view: string;
+  scope: string;
+  entity_type: string;
+  entity_id: string;
+  entity_name: string;
+  entity_country: string | null;
+  sum_eur: number;
+  award_count: number;
+  median_eur: number | null;
+  native_currency: string | null;
+  sum_native: number | null;
+  rank: number;
+};
+type FundingCoverageRow = {
+  country: string;
+  completeness: string;
+  as_of: string | null;
+};
+
+function mapFundingCountry(r: FundingCountryRow): FundingCountry {
+  return {
+    view: r.view === "awarded" ? "awarded" : "received",
+    country: r.country,
+    sumEur: r.sum_eur,
+    awardCount: r.award_count,
+    medianEur: r.median_eur,
+    nativeCurrency: r.native_currency,
+    sumNative: r.sum_native,
+  };
+}
+function mapFundingEntity(r: FundingEntityRow): FundingEntity {
+  return {
+    view: r.view === "awarded" ? "awarded" : "received",
+    scope: r.scope,
+    entityType: r.entity_type === "funder" ? "funder" : "recipient",
+    entityId: r.entity_id,
+    entityName: r.entity_name,
+    entityCountry: r.entity_country,
+    sumEur: r.sum_eur,
+    awardCount: r.award_count,
+    medianEur: r.median_eur,
+    nativeCurrency: r.native_currency,
+    sumNative: r.sum_native,
+    rank: r.rank,
+  };
+}
+function mapFundingCoverage(r: FundingCoverageRow): FundingCoverage {
+  return { country: r.country, completeness: r.completeness, asOf: r.as_of };
+}
+
+export async function fetchFundingAggregate(
+  view: FundingView,
+): Promise<FundingAggregate> {
+  const res = await fetch(`/api/funding?view=${view}`);
+  if (!res.ok) throw new Error(`Failed to load funding aggregate (${res.status})`);
+  const data = (await res.json()) as {
+    countries: FundingCountryRow[];
+    coverage: FundingCoverageRow[];
+  };
+  return {
+    countries: data.countries.map(mapFundingCountry),
+    coverage: data.coverage.map(mapFundingCoverage),
+  };
+}
+
+export async function fetchFundingLeaderboard(
+  view: FundingView,
+  scope: string,
+): Promise<FundingEntity[]> {
+  const res = await fetch(
+    `/api/funding?view=${view}&scope=${encodeURIComponent(scope)}`,
+  );
+  if (!res.ok)
+    throw new Error(`Failed to load funding leaderboard (${res.status})`);
+  const data = (await res.json()) as { entities: FundingEntityRow[] };
+  return data.entities.map(mapFundingEntity);
+}

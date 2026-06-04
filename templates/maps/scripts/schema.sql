@@ -64,3 +64,46 @@ CREATE VIRTUAL TABLE grants_fts USING fts5(
   program,
   tokenize = 'unicode61 remove_diacritics 1'
 );
+
+-- ── Funding rollups (money actually paid out) ───────────────────────────────
+-- Pre-aggregated from grants-sources awards.jsonl by scripts/build-funding-rollups.ts
+-- (pnpm build:funding). Amounts are stored in EUR (canonical, comparable across
+-- countries) via a dated FX snapshot, plus the native currency/amount where a
+-- group is single-currency. `view` is 'received' (money landing on recipients)
+-- or 'awarded' (money leaving funders). `country = 'ALL'` holds the global hero.
+
+DROP TABLE IF EXISTS funding_country;
+CREATE TABLE funding_country (
+  view            TEXT NOT NULL,    -- received | awarded
+  country         TEXT NOT NULL,    -- ISO/EU code, or 'ALL' for the global hero
+  sum_eur         REAL NOT NULL,
+  award_count     INTEGER NOT NULL,
+  median_eur      REAL,
+  native_currency TEXT,             -- set only when the group is single-currency
+  sum_native      REAL,
+  PRIMARY KEY (view, country)
+);
+
+DROP TABLE IF EXISTS funding_entity;
+CREATE TABLE funding_entity (
+  view            TEXT NOT NULL,    -- received | awarded
+  scope           TEXT NOT NULL,    -- 'ALL' or a country code
+  entity_type     TEXT NOT NULL,    -- recipient | funder
+  entity_id       TEXT NOT NULL,
+  entity_name     TEXT NOT NULL,
+  entity_country  TEXT,
+  sum_eur         REAL NOT NULL,
+  award_count     INTEGER NOT NULL,
+  median_eur      REAL,
+  native_currency TEXT,
+  sum_native      REAL,
+  rank            INTEGER NOT NULL  -- 1..N within (view, scope), by sum_eur desc
+);
+CREATE INDEX idx_funding_entity_lookup ON funding_entity(view, scope, rank);
+
+DROP TABLE IF EXISTS funding_coverage;
+CREATE TABLE funding_coverage (
+  country      TEXT PRIMARY KEY,
+  completeness TEXT NOT NULL,       -- full | partial | threshold_capped | sample
+  as_of        TEXT
+);

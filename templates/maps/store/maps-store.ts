@@ -8,7 +8,12 @@
 // =============================================================================
 
 import { create } from "zustand";
-import { fetchAggregate, fetchGrantsPage } from "@/mock-data/locations";
+import {
+  fetchAggregate,
+  fetchGrantsPage,
+  fetchFundingAggregate,
+  fetchFundingLeaderboard,
+} from "@/mock-data/locations";
 import type {
   Grant,
   GrantStatus,
@@ -17,12 +22,26 @@ import type {
   InstrumentType,
   ApplicationMode,
   GlobalStats,
+  FundingView,
+  FundingAggregate,
+  FundingEntity,
 } from "@/mock-data/locations";
+import type { DisplayCurrency } from "@/lib/fx-rates";
 
 type ViewMode = "map" | "list" | "split";
 type MapStyle = "default" | "streets" | "outdoors" | "satellite";
 
 export type MetricMode = "providers" | "schemes" | "funding";
+
+// Which face of the morphing landing-page card is showing. 'discover' is the
+// existing grant-finder; the two funding views are retrospective ("who got paid"
+// / "who paid"). Lives in client state (home route only), not a URL route.
+export type PanelView = "discover" | "received" | "awarded";
+
+// 'discover' has no funding view; the two funding faces map 1:1 to FundingView.
+function fundingViewOf(v: PanelView): FundingView | null {
+  return v === "received" || v === "awarded" ? v : null;
+}
 
 export type GrantSortBy =
   | "deadline-soonest"
@@ -87,6 +106,15 @@ interface GrantsState {
   metricMode: MetricMode;
   isGrantsListExpanded: boolean;
 
+  // Funding layer (lazy-loaded; populated on first switch to a funding view)
+  panelView: PanelView;
+  displayCurrency: DisplayCurrency;
+  fundingScope: string | null; // selected country code; null = global ("ALL")
+  selectedFundingEntityId: string | null;
+  fundingAggregates: Partial<Record<FundingView, FundingAggregate>>;
+  fundingLeaderboards: Record<string, FundingEntity[]>; // key `${view}|${scope}`
+  fundingLoading: boolean;
+
   // ── Actions ──
   initialize: () => Promise<void>;
   refetchGrants: () => Promise<void>;
@@ -109,6 +137,14 @@ interface GrantsState {
   setViewMode: (m: ViewMode) => void;
   setMetricMode: (m: MetricMode) => void;
   setGrantsListExpanded: (v: boolean) => void;
+
+  // Funding actions
+  setPanelView: (v: PanelView) => void;
+  setDisplayCurrency: (c: DisplayCurrency) => void;
+  setFundingScope: (country: string | null) => void;
+  selectFundingEntity: (id: string | null) => void;
+  loadFundingAggregate: (view: FundingView) => Promise<void>;
+  loadFundingLeaderboard: (view: FundingView, scope: string) => Promise<void>;
 
   // ── Selectors ──
   getFilteredGrants: () => Grant[];
@@ -157,6 +193,14 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
   viewMode: "split",
   metricMode: "schemes",
   isGrantsListExpanded: true,
+
+  panelView: "discover",
+  displayCurrency: "EUR",
+  fundingScope: null,
+  selectedFundingEntityId: null,
+  fundingAggregates: {},
+  fundingLeaderboards: {},
+  fundingLoading: false,
 
   initialize: async () => {
     if (get().loaded || get().loading) return;
@@ -322,6 +366,53 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
   setViewMode: (m) => set({ viewMode: m }),
   setMetricMode: (m) => set({ metricMode: m }),
   setGrantsListExpanded: (v) => set({ isGrantsListExpanded: v }),
+
+  // ── Funding actions (lazy-load; never block initialize) ──
+  setPanelView: (v) => {
+    set({ panelView: v, selectedFundingEntityId: null });
+    const fv = fundingViewOf(v);
+    if (fv) {
+      void get().loadFundingAggregate(fv);
+      void get().loadFundingLeaderboard(fv, get().fundingScope ?? "ALL");
+    }
+  },
+
+  setDisplayCurrency: (c) => set({ displayCurrency: c }),
+
+  setFundingScope: (country) => {
+    set({ fundingScope: country, selectedFundingEntityId: null });
+    const fv = fundingViewOf(get().panelView);
+    if (fv) void get().loadFundingLeaderboard(fv, country ?? "ALL");
+  },
+
+  selectFundingEntity: (id) => set({ selectedFundingEntityId: id }),
+
+  loadFundingAggregate: async (view) => {
+    if (get().fundingAggregates[view]) return; // cached
+    set({ fundingLoading: true });
+    try {
+      const agg = await fetchFundingAggregate(view);
+      set((s) => ({
+        fundingAggregates: { ...s.fundingAggregates, [view]: agg },
+        fundingLoading: false,
+      }));
+    } catch {
+      set({ fundingLoading: false });
+    }
+  },
+
+  loadFundingLeaderboard: async (view, scope) => {
+    const key = `${view}|${scope}`;
+    if (get().fundingLeaderboards[key]) return; // cached
+    try {
+      const entities = await fetchFundingLeaderboard(view, scope);
+      set((s) => ({
+        fundingLeaderboards: { ...s.fundingLeaderboards, [key]: entities },
+      }));
+    } catch {
+      /* leaderboard stays empty on error */
+    }
+  },
 
   // ── Selectors ──
   // The current page is already filtered + sorted server-side.

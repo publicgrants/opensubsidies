@@ -4,9 +4,10 @@
   "description": "OpenSubsidies — global, interactive grant intelligence dashboard backed by the grants-sources catalog.",
   "private": true,
   "scripts": {
-    "build:data": "tsx scripts/build-catalog.ts",
-    "db:reset:local": "wrangler d1 execute opensubsidies-db --local --file=scripts/schema.sql && wrangler d1 execute opensubsidies-db --local --file=scripts/.generated/data.sql",
-    "db:reset:remote": "wrangler d1 execute opensubsidies-db --remote --file=scripts/schema.sql && wrangler d1 execute opensubsidies-db --remote --file=scripts/.generated/data.sql",
+    "build:data": "tsx scripts/build-catalog.ts && tsx scripts/build-funding-rollups.ts",
+    "build:funding": "tsx scripts/build-funding-rollups.ts",
+    "db:reset:local": "wrangler d1 execute opensubsidies-db --local --file=scripts/schema.sql && wrangler d1 execute opensubsidies-db --local --file=scripts/.generated/data.sql && wrangler d1 execute opensubsidies-db --local --file=scripts/.generated/funding.sql",
+    "db:reset:remote": "wrangler d1 execute opensubsidies-db --remote --file=scripts/schema.sql && wrangler d1 execute opensubsidies-db --remote --file=scripts/.generated/data.sql && wrangler d1 execute opensubsidies-db --remote --file=scripts/.generated/funding.sql",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

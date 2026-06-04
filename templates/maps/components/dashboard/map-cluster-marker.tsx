@@ -27,20 +27,36 @@ function sizeForCount(n: number | null): { px: number; fontPx: number } {
   return { px, fontPx };
 }
 
+// Funding bubbles size by a 0..1 magnitude (caller does the √-area scaling), so
+// area is proportional to money rather than log-compressed like counts.
+function sizeForMagnitude(m: number): { px: number; fontPx: number } {
+  const mag = Math.max(0, Math.min(1, m));
+  return { px: Math.round(20 + mag * 44), fontPx: Math.round(11 + mag * 6) };
+}
+
 export type ClusterMarkerOptions = {
   count: number | null;
   label?: string;
   /** Country-tier bubbles get a slightly different accent ring. */
   variant: "country" | "cluster";
   onClick: () => void;
+  /** Funding bubbles: pre-formatted money label (overrides the count text). */
+  displayValue?: string;
+  /** Funding bubbles: 0..1 magnitude for √-area sizing. */
+  magnitude?: number;
+  /** Funding view accent: teal for received, violet for awarded. */
+  tone?: "received" | "awarded";
 };
 
 export function createClusterMarkerElement(
   opts: ClusterMarkerOptions,
 ): HTMLElement {
   const { count, label, variant, onClick } = opts;
-  const { px, fontPx } = sizeForCount(count);
-  const display = count === null ? "—" : formatCount(count);
+  const { px, fontPx } =
+    opts.magnitude != null ? sizeForMagnitude(opts.magnitude) : sizeForCount(count);
+  const display =
+    opts.displayValue ?? (count === null ? "—" : formatCount(count));
+  const ariaValue = opts.displayValue ?? (count === null ? "no data" : String(count));
 
   const el = document.createElement("div");
   el.className = "grant-cluster-container";
@@ -49,8 +65,8 @@ export function createClusterMarkerElement(
   el.setAttribute(
     "aria-label",
     variant === "country"
-      ? `${label ?? "Country"} — ${count === null ? "no data" : count}. Click to zoom in.`
-      : `${count === null ? "No data" : count} in this cluster. Click to zoom in.`,
+      ? `${label ?? "Country"} — ${ariaValue}. Click to zoom in.`
+      : `${ariaValue} in this cluster. Click to zoom in.`,
   );
 
   const ring =
@@ -59,9 +75,13 @@ export function createClusterMarkerElement(
       : "ring-2 ring-white/70 dark:ring-white/50";
 
   const bg =
-    variant === "country"
-      ? "bg-blue-600 hover:bg-blue-500"
-      : "bg-indigo-500 hover:bg-indigo-400";
+    opts.tone === "received"
+      ? "bg-teal-600 hover:bg-teal-500"
+      : opts.tone === "awarded"
+        ? "bg-violet-600 hover:bg-violet-500"
+        : variant === "country"
+          ? "bg-blue-600 hover:bg-blue-500"
+          : "bg-indigo-500 hover:bg-indigo-400";
 
   el.innerHTML = `
     <div

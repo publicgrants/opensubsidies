@@ -6,7 +6,13 @@
 // prose on demand. Type names are preserved for imports across the dashboard.
 // =============================================================================
 
-export { fetchAggregate, fetchGrantsPage, fetchGrantProse } from "./catalog-loader";
+export {
+  fetchAggregate,
+  fetchGrantsPage,
+  fetchGrantProse,
+  fetchFundingAggregate,
+  fetchFundingLeaderboard,
+} from "./catalog-loader";
 
 export type {
   Grant,
@@ -18,4 +24,9 @@ export type {
   InstrumentType,
   ApplicationMode,
   GrantDocument,
+  FundingView,
+  FundingCountry,
+  FundingEntity,
+  FundingCoverage,
+  FundingAggregate,
 } from "./catalog-loader";
