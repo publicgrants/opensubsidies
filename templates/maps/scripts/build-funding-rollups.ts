@@ -13,6 +13,9 @@
 // Correctness rules (see the plan):
 //   • recipient country = recipient_country ?? funder country (the {CC} prefix)
 //   • exclude ES (sample-only, anonymised) from money totals + leaderboards
+//   • US-only: keep grant instruments (PROJECT GRANT (B) / COOPERATIVE
+//     AGREEMENT (B)); drop the entitlements / loans / insurance / null-instrument
+//     aggregates USASpending mixes in. Other jurisdictions are not filtered.
 //   • mask null-id recipients (persons) from leaderboards, but still count their
 //     money in country totals
 //   • amounts are pre-converted to EUR via a dated snapshot; unknown currencies
@@ -39,9 +42,11 @@ const OUT_SQL = path.resolve(process.cwd(), "scripts/.generated/funding.sql");
 // for now only because its sample is fully anonymised (no recipient ids /
 // countries); flagged for the data agent to revisit. Presentation safeguards
 // apply downstream regardless: null-id recipients are masked from leaderboards
-// and per-country completeness drives the coverage chips. (US is included; its
-// USASpending data quality — CMS/entitlement scale — is being addressed
-// upstream in the catalog.)
+// and per-country completeness drives the coverage chips. (US is a special
+// case: USASpending is the federal financial-assistance register, mixing
+// competitive grants with Medicare/Medicaid entitlements, loans and insurance,
+// so US records are filtered to grant instruments here — see
+// includeInGrantRollup — while the full data stays in the catalog.)
 const EXCLUDED_COUNTRIES = new Set(["ES"]);
 const TOP_N = 50;
 const ALL = "ALL";
@@ -55,6 +60,7 @@ type Award = {
   recipient_country?: unknown;
   amount?: unknown;
   currency?: unknown;
+  instrument?: unknown;
   funder?: unknown;
   grantor_name_raw?: unknown;
   fetched_at?: unknown;
@@ -119,6 +125,26 @@ function slugName(funderId: string): string {
     .replace(/([a-zæøå])([A-ZÆØÅ])/g, "$1 $2")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// ── Grant-only filter for the money rollups ─────────────────────────────────
+// US is the one source that mixes competitive grants with entitlements, loans
+// and insurance: USASpending is the federal *financial-assistance* register,
+// not a grant register, and its CMS/Medicare/Medicaid rows alone reach tens of
+// trillions. So for US we keep only the two CFDA assistance classes that are
+// competitive grants comparable to the other countries' registers — project
+// grants and cooperative agreements — and drop everything else, including the
+// null-instrument entitlement aggregates ("MULTIPLE RECIPIENTS"). The dropped
+// records stay in the catalog; they are just not summed into the totals.
+//
+// Every non-US jurisdiction passes through unchanged. Do NOT generalise this to
+// a global "drop nulls / keep only grants": EU FTS publishes awards with
+// instrument:null and NO carries garanti/laan, so a global rule would wrongly
+// gut their totals. Per-country grant discipline is a separate, opt-in change.
+const US_GRANT_INSTRUMENTS = new Set(["PROJECT GRANT (B)", "COOPERATIVE AGREEMENT (B)"]);
+function includeInGrantRollup(funderCC: string, instrument: string | null): boolean {
+  if (funderCC !== "US") return true;
+  return instrument !== null && US_GRANT_INSTRUMENTS.has(instrument);
 }
 
 // ── Approximate median via a bounded log-bucket histogram ───────────────────
@@ -302,6 +328,15 @@ async function processFile(file: string): Promise<void> {
       stats.unknownCurrencies.add(currency);
       continue;
     }
+
+    // Grant-only filter (US mixes entitlements/loans/insurance into the same
+    // register). A money-bearing record dropped here is one we deliberately
+    // exclude from the totals; it remains in the catalog.
+    const instrument = typeof a.instrument === "string" ? a.instrument : null;
+    if (!includeInGrantRollup(funderCC, instrument)) {
+      stats.skippedNonGrant++;
+      continue;
+    }
     stats.counted++;
 
     const fetched = typeof a.fetched_at === "string" ? a.fetched_at : null;
@@ -346,6 +381,7 @@ const stats = {
   files: 0,
   counted: 0,
   skippedNoAmount: 0,
+  skippedNonGrant: 0,
   unconvertible: 0,
   unknownCurrencies: new Set<string>(),
 };
@@ -549,6 +585,7 @@ async function main(): Promise<void> {
     `[build-funding] wrote ${OUT_SQL}\n` +
       `  files=${stats.files} counted=${stats.counted.toLocaleString()} ` +
       `skippedNoAmount=${stats.skippedNoAmount.toLocaleString()} ` +
+      `skippedNonGrant=${stats.skippedNonGrant.toLocaleString()} ` +
       `unconvertible=${stats.unconvertible.toLocaleString()}` +
       (stats.unknownCurrencies.size
         ? ` [${[...stats.unknownCurrencies].join(", ")}]`
