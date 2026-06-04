@@ -252,9 +252,37 @@ export function MapView() {
       style: getMapStyleUrl(),
       center: [mapCenter.lng, mapCenter.lat],
       zoom: mapZoom,
-      minZoom: 1.5,
+      minZoom: 0.7,
       maxZoom: 18,
       attributionControl: false,
+    });
+
+    // Render as a 3D globe rather than a flat web-mercator map. The projection
+    // (and the atmosphere/sky halo) live on the style, and `setStyle` — fired
+    // by the theme / basemap toggle — resets them, so we re-apply on every
+    // `style.load`, not just once at construction.
+    map.on("style.load", () => {
+      map.setProjection({ type: "globe" });
+      map.setSky({
+        "sky-color": "#a7c7e7",
+        "sky-horizon-blend": 0.6,
+        "horizon-color": "#e8eef5",
+        "horizon-fog-blend": 0.6,
+        "fog-color": "#d9e4f0",
+        "fog-ground-blend": 0.2,
+        // Fade the atmosphere out as the user zooms in to street level.
+        "atmosphere-blend": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          0,
+          1,
+          7,
+          1,
+          11,
+          0,
+        ],
+      });
     });
 
     map.addControl(

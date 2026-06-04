@@ -19,7 +19,11 @@ export type ApplicationMode =
   | "call_window"
   | "unknown";
 
-export type CatalogState = "planned" | "in_progress" | "complete";
+export type CatalogState =
+  | "planned"
+  | "in_progress"
+  | "ready_for_verification"
+  | "complete";
 
 export type FunderRecord = {
   id: string;

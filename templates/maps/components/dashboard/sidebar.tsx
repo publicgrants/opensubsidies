@@ -49,14 +49,14 @@ import { funders } from "@/mock-data/locations";
 import type { FunderType, InstrumentType } from "@/mock-data/locations";
 import { cn } from "@/lib/utils";
 
+// "Funding" is intentionally omitted: there is no disbursement data wired yet
+// (clustering.fundingForGrant returns 0), so the metric renders an em-dash
+// everywhere and looks broken. The MetricMode type and the null-handling code
+// downstream are left intact — re-add the entry below once awards.jsonl is
+// summed into the catalog.
 const METRIC_OPTIONS: { id: MetricMode; label: string; hint?: string }[] = [
   { id: "providers", label: "Providers" },
   { id: "schemes", label: "Schemes" },
-  {
-    id: "funding",
-    label: "Funding",
-    hint: "No funding data yet — disbursements to companies aren't tracked in the catalog.",
-  },
 ];
 
 function fmtBadge(n: number | null): string {
