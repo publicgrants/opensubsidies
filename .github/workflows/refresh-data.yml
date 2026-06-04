@@ -67,6 +67,15 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      # funding.sql is self-seeding (CREATE TABLE IF NOT EXISTS) — it creates the
+      # funding_* tables on first run, then DELETEs + re-INSERTs the rollups. It
+      # does not touch funders/grants, so order vs. the data reload is irrelevant.
+      - name: Reload D1 funding rollups
+        run: pnpm exec wrangler d1 execute opensubsidies-db --remote --file=scripts/.generated/funding.sql
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Re-embed documented grants into Vectorize
         run: node scripts/reindex-runner.mjs
         env:
