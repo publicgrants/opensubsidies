@@ -45,5 +45,6 @@ next-env.d.ts
 # OpenNext / Cloudflare
 /.open-next/
 /.wrangler/
-cloudflare-env.d.ts
+# cloudflare-env.d.ts is committed (CI can't run `wrangler types` reliably) —
+# see the header in that file.
 
