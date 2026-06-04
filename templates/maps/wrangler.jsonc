@@ -20,7 +20,7 @@
     {
       "binding": "DB",
       "database_name": "opensubsidies-db",
-      "database_id": "0edb9664-e3a4-4a1c-a4fe-c4f778b1dc6c"
+      "database_id": "e394c8a6-715e-4e8b-9f7d-d9f7b2d77373"
     }
   ],
   // Workers AI for query/document embeddings (@cf/baai/bge-m3, 1024-dim).

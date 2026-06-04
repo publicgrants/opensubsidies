@@ -13,12 +13,15 @@ Cloudflare dashboard → **My Profile → API Tokens → Create Token → Custom
 - **Account › D1 › Edit**
 - **Account › Vectorize › Edit**
 - **Account › Workers AI › Read**
-- Account resources: *Fredrik@fmcybersecurity.com's Account*
+- **Account › Workers Scripts › Edit** (needed to deploy/refresh)
+- Account resources: *Standahl@outlook.com's Account*
 
 Then in **publicgrants/opensubsidies → Settings → Secrets and variables → Actions**, add:
-- `CLOUDFLARE_API_TOKEN` = the token above
-- `CLOUDFLARE_ACCOUNT_ID` = `16f45884803ac72caae1fa6b3273a4a5` *(I set this for you if I had access — verify it exists)*
+- `CLOUDFLARE_API_TOKEN` = the token above (account `ba030de023c2b868979e9bb9d5e54a2d`)
+- `CLOUDFLARE_ACCOUNT_ID` = `ba030de023c2b868979e9bb9d5e54a2d`
 - `REINDEX_KEY` = the **same value as the Worker's `REINDEX_KEY` secret** (set via `wrangler secret put REINDEX_KEY`). Already configured in this repo's Actions secrets.
+
+Live worker: **https://opensubsidies.standahl.workers.dev**
 - `GS_READ_TOKEN` = only if `publicgrants/grant-sources` is **private** (a fine-grained PAT with read on that repo). If it's public, delete the `token:` line from the checkout step.
 
 ### 2. Cross-repo trigger (so a grant-sources push refreshes the data)

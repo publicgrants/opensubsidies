@@ -8,7 +8,7 @@
 # REQUIRED repo secrets (Settings → Secrets and variables → Actions):
 #   CLOUDFLARE_API_TOKEN  — CF dashboard → API Tokens → Create. Permissions:
 #       Account › D1 Edit, Account › Vectorize Edit, Account › Workers AI Read.
-#   CLOUDFLARE_ACCOUNT_ID — 16f45884803ac72caae1fa6b3273a4a5
+#   CLOUDFLARE_ACCOUNT_ID — ba030de023c2b868979e9bb9d5e54a2d (Standahl@outlook.com)
 #   REINDEX_KEY           — must equal the Worker's REINDEX_KEY secret
 #   GS_READ_TOKEN         — only if publicgrants/grant-sources is PRIVATE
 #                           (a PAT / fine-grained token with read on that repo)
@@ -72,5 +72,5 @@ jobs:
       - name: Re-embed documented grants into Vectorize
         run: node scripts/reindex-runner.mjs
         env:
-          BASE_URL: https://opensubsidies.fredrik-16f.workers.dev
+          BASE_URL: https://opensubsidies.standahl.workers.dev
           REINDEX_KEY: ${{ secrets.REINDEX_KEY }}
