@@ -22,10 +22,10 @@ Then in **publicgrants/opensubsidies → Settings → Secrets and variables → 
 - `REINDEX_KEY` = the **same value as the Worker's `REINDEX_KEY` secret** (set via `wrangler secret put REINDEX_KEY`). Already configured in this repo's Actions secrets.
 
 Live worker: **https://opensubsidies.standahl.workers.dev**
-- `GS_READ_TOKEN` = only if `publicgrants/grant-sources` is **private** (a fine-grained PAT with read on that repo). If it's public, delete the `token:` line from the checkout step.
+- (No read token needed — `publicgrants/grants-sources` is public.)
 
 ### 2. Cross-repo trigger (so a grant-sources push refreshes the data)
-In **publicgrants/grant-sources**, add `.github/workflows/notify-opensubsidies.yml`:
+In **publicgrants/grants-sources**, add `.github/workflows/notify-opensubsidies.yml`:
 
 ```yaml
 name: Notify opensubsidies
