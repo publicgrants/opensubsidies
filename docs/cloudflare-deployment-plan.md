@@ -97,4 +97,9 @@ Cloudflare Worker (Next 16 ≥16.2.6 via @opennextjs/cloudflare 1.19.x, Workers 
 - **P2 (hardening):** validation gate, versioning/GC, observability/alerting (esp. "search returns id whose detail 404s" = consistency alarm), error UI states, favicon caching, language facet.
 
 ## Out of scope / later
-Awards/funding layer; generative RAG (LLM on retrieval); UI i18n; multilingual reranker (pending Workers AI availability).
+~~Awards/funding layer~~ — **shipped** (commit e99adde): Money received/awarded card,
+globe funding bubbles, and D1 funding rollups built from grant-sources `awards.jsonl`
+(`templates/maps/scripts/build-funding-rollups.ts`). NOTE: the refresh pipeline must
+load the new `funding_*` tables (see `funding.sql`) — not yet wired into
+`refresh-data.yml`. Generative RAG (LLM on retrieval); UI i18n; multilingual reranker
+(pending Workers AI availability).
