@@ -1,0 +1,76 @@
+# P2 — Auto-refresh the OpenSubsidies maps data (D1 + Vectorize) when the
+# grant-sources catalog changes. Does NOT redeploy the Worker (code deploys are
+# separate); it only reloads data, which the live Worker reads immediately.
+#
+# Triggers: manual, a daily backstop, and a cross-repo dispatch from
+# grant-sources (see the snippet in docs/p2-pipeline-setup.md).
+#
+# REQUIRED repo secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN  — CF dashboard → API Tokens → Create. Permissions:
+#       Account › D1 Edit, Account › Vectorize Edit, Account › Workers AI Read.
+#   CLOUDFLARE_ACCOUNT_ID — 16f45884803ac72caae1fa6b3273a4a5
+#   REINDEX_KEY           — must equal the Worker's REINDEX_KEY secret
+#   GS_READ_TOKEN         — only if publicgrants/grant-sources is PRIVATE
+#                           (a PAT / fine-grained token with read on that repo)
+
+name: Refresh grant data
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [grant-sources-updated]
+  schedule:
+    - cron: "0 5 * * *" # daily 05:00 UTC backstop
+
+concurrency:
+  group: refresh-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: templates/maps
+    steps:
+      - name: Checkout opensubsidies
+        uses: actions/checkout@v4
+
+      - name: Checkout grant-sources
+        uses: actions/checkout@v4
+        with:
+          repository: publicgrants/grant-sources
+          path: grant-sources-data
+          token: ${{ secrets.GS_READ_TOKEN }} # omit/leave empty if public
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: templates/maps/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build D1 seed from grant-sources
+        run: pnpm build:data
+        env:
+          GRANTS_SOURCES_DIR: ${{ github.workspace }}/grant-sources-data
+
+      # data.sql DELETEs + re-INSERTs + rebuilds FTS (it does NOT drop tables, so
+      # schema/indexes persist). NOTE: not yet atomic — there is a brief window
+      # mid-reload; an atomic versioned swap is a future refinement.
+      - name: Reload D1 data
+        run: pnpm exec wrangler d1 execute opensubsidies-db --remote --file=scripts/.generated/data.sql
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Re-embed documented grants into Vectorize
+        run: node scripts/reindex-runner.mjs
+        env:
+          BASE_URL: https://opensubsidies.fredrik-16f.workers.dev
+          REINDEX_KEY: ${{ secrets.REINDEX_KEY }}
