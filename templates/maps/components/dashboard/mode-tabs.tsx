@@ -11,11 +11,12 @@ const TABS: {
   id: PanelView;
   label: string;
   short: string;
+  sub: string;
   icon: React.ComponentType<{ className?: string }>;
 }[] = [
-  { id: "discover", label: "Find grants", short: "Grants", icon: Compass },
-  { id: "received", label: "Money received", short: "Received", icon: ArrowDownToLine },
-  { id: "awarded", label: "Money awarded", short: "Awarded", icon: ArrowUpFromLine },
+  { id: "discover", label: "Find grants", short: "Grants", sub: "Discover", icon: Compass },
+  { id: "received", label: "Money received", short: "Received", sub: "Inflow", icon: ArrowDownToLine },
+  { id: "awarded", label: "Money awarded", short: "Awarded", sub: "Outflow", icon: ArrowUpFromLine },
 ];
 
 // Mobile bottom navigation for switching the three views. On desktop the switch
@@ -57,23 +58,39 @@ export function ModeTabs() {
   );
 }
 
-// In-card segmented control (desktop). Rendered at the top of the discover and
-// funding cards so the switch sits with the content it controls — no floating
-// bar to collide with the card or the map controls. Hidden on mobile (the
-// bottom nav handles it there).
+// In-card hero switch (desktop): the "Luxury Glass" segmented control — a
+// recessed glass track with a luminous sliding thumb whose accent (blue / green
+// / amber) mirrors the map bubbles. Styling lives in app/globals.css
+// (`.mode-switch`); display is `hidden sm:grid` so mobile uses the bottom nav.
 export function ModeSwitchInline({ className }: { className?: string }) {
   const panelView = useGrantsStore((s) => s.panelView);
   const setPanelView = useGrantsStore((s) => s.setPanelView);
 
+  const pos = Math.max(
+    0,
+    TABS.findIndex((t) => t.id === panelView),
+  );
+
+  // Brief flag (cleared after the animation) drives the sheen sweep + icon pop.
+  const [animating, setAnimating] = React.useState(false);
+  const prevPos = React.useRef(pos);
+  React.useEffect(() => {
+    if (prevPos.current === pos) return;
+    prevPos.current = pos;
+    setAnimating(true);
+    const t = setTimeout(() => setAnimating(false), 720);
+    return () => clearTimeout(t);
+  }, [pos]);
+
   return (
     <div
-      className={cn(
-        "hidden grid-cols-3 gap-0.5 rounded-lg bg-sidebar-accent p-0.5 sm:grid",
-        className,
-      )}
+      className={cn("mode-switch hidden sm:grid", className)}
       role="tablist"
       aria-label="View"
+      data-pos={pos}
+      data-animating={animating ? "1" : undefined}
     >
+      <span className="mode-switch__thumb" aria-hidden="true" />
       {TABS.map((t) => {
         const active = panelView === t.id;
         const Icon = t.icon;
@@ -84,15 +101,13 @@ export function ModeSwitchInline({ className }: { className?: string }) {
             role="tab"
             aria-selected={active}
             onClick={() => setPanelView(t.id)}
-            className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-              active
-                ? "bg-background shadow-sm"
-                : "text-muted-foreground hover:text-foreground",
-            )}
+            className={cn("mode-switch__seg", active && "is-active")}
           >
-            <Icon className="size-3.5 shrink-0" />
-            <span className="truncate">{t.label}</span>
+            <span className="mode-switch__ico">
+              <Icon />
+            </span>
+            <span className="mode-switch__label">{t.label}</span>
+            <span className="mode-switch__sub">{t.sub}</span>
           </button>
         );
       })}

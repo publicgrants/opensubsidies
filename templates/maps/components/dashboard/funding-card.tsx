@@ -130,7 +130,7 @@ export function FundingCard({ view }: { view: FundingView }) {
       )}
     >
       {/* Mode switch — sits with the card it controls */}
-      <ModeSwitchInline className="m-2 mb-0" />
+      <ModeSwitchInline className="mx-3 mt-3" />
 
       {/* Header + hero */}
       <div className="px-3 pt-3 pb-2 border-b">

@@ -543,3 +543,184 @@
   width: 22rem;
   height: 22rem;
 }
+
+/* ── Hero view-switcher ("Luxury Glass") ─────────────────────────────────────
+   A recessed glass track with a luminous sliding thumb whose accent
+   (blue → teal → violet) mirrors the map bubbles. Display is controlled by
+   Tailwind (`hidden sm:grid`) on the element; this block supplies everything
+   else. Light is the default; `.dark` carries the deep-glass variant. The font
+   inherits the app sans (Outfit). prefers-reduced-motion is handled globally. */
+.mode-switch {
+  position: relative;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 8px;
+  height: 116px;
+  border-radius: 22px;
+  isolation: isolate;
+  /* light defaults */
+  --ms-track: rgba(15, 20, 35, 0.05);
+  --ms-hairline: rgba(15, 20, 35, 0.08);
+  --ms-seg-glass: rgba(15, 20, 35, 0.015);
+  --ms-thumb: linear-gradient(180deg, #fff, rgba(255, 255, 255, 0.72));
+  --ms-thumb-border: rgba(15, 20, 35, 0.1);
+  --ms-thumb-hi: rgba(255, 255, 255, 0.9);
+  --ms-ico: rgba(15, 20, 35, 0.04);
+  --ms-ico-border: rgba(15, 20, 35, 0.07);
+  background: var(--ms-track);
+  border: 1px solid var(--ms-hairline);
+  box-shadow:
+    inset 0 2px 5px rgba(15, 20, 35, 0.06),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.6);
+}
+.dark .mode-switch {
+  --ms-track: rgba(8, 10, 18, 0.5);
+  --ms-hairline: rgba(255, 255, 255, 0.06);
+  --ms-seg-glass: rgba(255, 255, 255, 0.022);
+  --ms-thumb:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0) 100%),
+    linear-gradient(180deg, rgba(20, 26, 40, 0.55), rgba(10, 13, 22, 0.65));
+  --ms-thumb-border: rgba(255, 255, 255, 0.14);
+  --ms-thumb-hi: rgba(255, 255, 255, 0.22);
+  --ms-ico: rgba(255, 255, 255, 0.03);
+  --ms-ico-border: rgba(255, 255, 255, 0.05);
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.55),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
+    0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Accent per active position — mirrors the map bubble colours.
+   grants = blue (discover) · received = green (money in) · awarded = amber/gold
+   (money handed out). */
+.mode-switch[data-pos="0"] { --ms-accent: #3b82f6; --ms-accent-soft: rgba(59, 130, 246, 0.55); --ms-accent-glow: rgba(59, 130, 246, 0.4); }
+.mode-switch[data-pos="1"] { --ms-accent: #22c55e; --ms-accent-soft: rgba(34, 197, 94, 0.55); --ms-accent-glow: rgba(34, 197, 94, 0.4); }
+.mode-switch[data-pos="2"] { --ms-accent: #f59e0b; --ms-accent-soft: rgba(245, 158, 11, 0.55); --ms-accent-glow: rgba(245, 158, 11, 0.42); }
+
+.mode-switch__thumb {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  height: 100px;
+  width: calc((100% - 16px - 12px) / 3);
+  border-radius: 17px;
+  z-index: 0;
+  background: var(--ms-thumb);
+  border: 1px solid var(--ms-thumb-border);
+  box-shadow:
+    0 0 0 1px var(--ms-accent-soft),
+    0 0 26px 2px var(--ms-accent-glow),
+    0 16px 30px -16px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 var(--ms-thumb-hi),
+    inset 0 -16px 30px -18px var(--ms-accent-glow);
+  transition:
+    transform 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.5s ease,
+    border-color 0.5s ease;
+  overflow: hidden;
+}
+.mode-switch[data-pos="0"] .mode-switch__thumb { transform: translateX(0); }
+.mode-switch[data-pos="1"] .mode-switch__thumb { transform: translateX(calc(100% + 6px)); }
+.mode-switch[data-pos="2"] .mode-switch__thumb { transform: translateX(calc(200% + 12px)); }
+
+.mode-switch__thumb::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(120% 90% at 50% -10%, var(--ms-accent-glow), transparent 60%);
+  opacity: 0.85;
+  transition: background 0.5s ease;
+}
+.mode-switch__thumb::after {
+  content: "";
+  position: absolute;
+  top: -40%;
+  left: -30%;
+  width: 60%;
+  height: 180%;
+  background: linear-gradient(75deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+  transform: skewX(-18deg);
+  filter: blur(4px);
+  opacity: 0;
+}
+.mode-switch[data-animating="1"] .mode-switch__thumb::after {
+  animation: ms-sweep 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes ms-sweep {
+  0% { transform: translateX(-30%) skewX(-18deg); opacity: 0; }
+  35% { opacity: 0.8; }
+  100% { transform: translateX(360%) skewX(-18deg); opacity: 0; }
+}
+
+.mode-switch__seg {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: none;
+  background: var(--ms-seg-glass);
+  border-radius: 17px;
+  color: var(--muted-foreground);
+  padding: 8px 6px;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.35s ease;
+}
+.mode-switch__ico {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  color: var(--muted-foreground);
+  background: var(--ms-ico);
+  border: 1px solid var(--ms-ico-border);
+  transition:
+    color 0.35s ease,
+    background 0.4s ease,
+    border-color 0.4s ease,
+    box-shadow 0.4s ease,
+    transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.mode-switch__ico svg { width: 20px; height: 20px; }
+.mode-switch__label {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.mode-switch__sub {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  opacity: 0.7;
+  transition: color 0.35s ease, opacity 0.35s ease;
+}
+.mode-switch__seg:hover:not(.is-active) { color: var(--foreground); }
+.mode-switch__seg:hover:not(.is-active) .mode-switch__ico { transform: translateY(-1px); }
+
+.mode-switch__seg.is-active { color: var(--foreground); }
+.mode-switch__seg.is-active .mode-switch__ico {
+  color: #fff;
+  transform: translateY(-1px) scale(1.04);
+  background: linear-gradient(180deg, var(--ms-accent), color-mix(in srgb, var(--ms-accent) 70%, #000 30%));
+  border-color: rgba(255, 255, 255, 0.25);
+  box-shadow:
+    0 6px 16px -6px var(--ms-accent-glow),
+    0 0 18px 0 var(--ms-accent-glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+.mode-switch__seg.is-active .mode-switch__sub { color: var(--ms-accent); opacity: 1; }
+.mode-switch[data-animating="1"] .mode-switch__seg.is-active .mode-switch__ico {
+  animation: ms-pop 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes ms-pop {
+  0% { transform: translateY(-1px) scale(0.9); }
+  55% { transform: translateY(-1px) scale(1.12); }
+  100% { transform: translateY(-1px) scale(1.04); }
+}

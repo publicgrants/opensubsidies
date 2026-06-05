@@ -332,7 +332,7 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
       )}
     >
       {/* Mode switch (home only) — sits with the card it controls */}
-      {mode === "all" && <ModeSwitchInline className="m-2 mb-0" />}
+      {mode === "all" && <ModeSwitchInline className="mx-3 mt-3" />}
 
       {/* Header */}
       <div className="px-3 pt-3 pb-2 border-b">

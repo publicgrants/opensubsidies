@@ -44,7 +44,7 @@ export type ClusterMarkerOptions = {
   displayValue?: string;
   /** Funding bubbles: 0..1 magnitude for √-area sizing. */
   magnitude?: number;
-  /** Funding view accent: teal for received, violet for awarded. */
+  /** Funding view accent: green for received, amber for awarded. */
   tone?: "received" | "awarded";
 };
 
@@ -76,9 +76,9 @@ export function createClusterMarkerElement(
 
   const bg =
     opts.tone === "received"
-      ? "bg-teal-600 hover:bg-teal-500"
+      ? "bg-green-600 hover:bg-green-500"
       : opts.tone === "awarded"
-        ? "bg-violet-600 hover:bg-violet-500"
+        ? "bg-amber-600 hover:bg-amber-500"
         : variant === "country"
           ? "bg-blue-600 hover:bg-blue-500"
           : "bg-indigo-500 hover:bg-indigo-400";
