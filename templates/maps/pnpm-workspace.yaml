@@ -1,3 +1,11 @@
+# Single-package "workspace". pnpm 10 (used by the Cloudflare build) treats the
+# presence of this file as declaring a workspace and REQUIRES a `packages` field —
+# without it `pnpm install` aborts with "packages field missing or empty". `.`
+# makes the repo root itself the sole package. (pnpm 11, used locally, makes the
+# field optional, so this is only strictly needed for the CI/CF pnpm 10 build.)
+packages:
+  - "."
+
 allowBuilds:
   esbuild: set this to true or false
   msw: set this to true or false
