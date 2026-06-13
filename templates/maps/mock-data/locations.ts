@@ -13,6 +13,7 @@ export {
   fetchFundingAggregate,
   fetchFundingLeaderboard,
   fetchFundingSubdivisions,
+  fetchFundingRecipientBreakdown,
 } from "./catalog-loader";
 
 export type {
@@ -31,5 +32,6 @@ export type {
   FundingCoverage,
   FundingAggregate,
   FundingSubdivision,
+  FundingRecipientYear,
   SubdivisionLevel,
 } from "./catalog-loader";

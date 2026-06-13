@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   queryFundingAggregate,
   queryFundingLeaderboard,
+  queryFundingRecipientBreakdown,
   queryFundingSubdivisions,
   type FundingView,
 } from "@/lib/server/db";
@@ -25,6 +26,16 @@ export async function GET(request: Request) {
   const view = coerceView(searchParams.get("view"));
   const scope = searchParams.get("scope");
   const levelParam = searchParams.get("level");
+  const recipient = searchParams.get("recipient");
+
+  // Recipient grant breakdown (all their grants, by year × funder) — view-agnostic.
+  if (recipient) {
+    const breakdown = await queryFundingRecipientBreakdown(recipient);
+    return NextResponse.json(
+      { breakdown },
+      { headers: { "cache-control": CACHE } },
+    );
+  }
 
   if (scope && levelParam) {
     const level = LEVELS.has(levelParam) ? levelParam : "fylke";

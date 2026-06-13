@@ -34,7 +34,11 @@ import {
   fromEur,
   type DisplayCurrency,
 } from "@/lib/fx-rates";
-import type { Funder, FundingEntity } from "@/mock-data/locations";
+import type {
+  Funder,
+  FundingEntity,
+  FundingRecipientYear,
+} from "@/mock-data/locations";
 
 type FundingView = "received" | "awarded";
 
@@ -538,6 +542,30 @@ function LeaderboardRow({
   );
 }
 
+// A recipient's grants, grouped by award year (rows arrive year-desc, undated
+// last, largest funder first — preserve that order). Each group carries its own
+// sum + count for the year header.
+type YearGroup = {
+  year: number | null;
+  rows: FundingRecipientYear[];
+  sumEur: number;
+  count: number;
+};
+function groupByYear(rows: FundingRecipientYear[]): YearGroup[] {
+  const m = new Map<number | null, FundingRecipientYear[]>();
+  for (const r of rows) {
+    const arr = m.get(r.year);
+    if (arr) arr.push(r);
+    else m.set(r.year, [r]);
+  }
+  return [...m.entries()].map(([year, rs]) => ({
+    year,
+    rows: rs,
+    sumEur: rs.reduce((a, r) => a + r.sumEur, 0),
+    count: rs.reduce((a, r) => a + r.awardCount, 0),
+  }));
+}
+
 function EntityDetail({
   entity,
   view,
@@ -551,6 +579,24 @@ function EntityDetail({
 }) {
   const native = fmtNative(entity.sumNative, entity.nativeCurrency);
   const verb = view === "received" ? "received" : "paid out";
+  const isRecipient = entity.entityType === "recipient";
+
+  // All-grants breakdown (year × funder), loaded + cached per recipient.
+  const loadDetail = useGrantsStore((s) => s.loadFundingRecipientDetail);
+  const breakdown = useGrantsStore(
+    (s) => s.fundingRecipientBreakdowns[entity.entityId],
+  );
+  React.useEffect(() => {
+    if (isRecipient) void loadDetail(entity.entityId);
+  }, [isRecipient, entity.entityId, loadDetail]);
+
+  const groups = React.useMemo(
+    () => (breakdown ? groupByYear(breakdown) : null),
+    [breakdown],
+  );
+  const allTimeCount = groups?.reduce((a, g) => a + g.count, 0) ?? 0;
+  const allTimeSumEur = groups?.reduce((a, g) => a + g.sumEur, 0) ?? 0;
+
   return (
     <div className="rounded-lg border bg-card p-3">
       <button
@@ -579,7 +625,98 @@ function EntityDetail({
         )}
         <Metric label="Rank" value={`#${entity.rank}`} />
       </div>
+
+      {/* All grants this recipient received, grouped by year (who paid + how much). */}
+      {isRecipient && (
+        <div className="mt-3 border-t pt-2">
+          <div className="mb-1.5 flex items-baseline justify-between gap-2">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              All grants
+            </span>
+            {groups && (
+              <span className="text-[11px] tabular-nums text-muted-foreground">
+                {allTimeCount.toLocaleString()} received · ≈ {fmtEur(allTimeSumEur, currency)}
+              </span>
+            )}
+          </div>
+
+          {breakdown == null ? (
+            <p className="py-2 text-center text-[11px] text-muted-foreground">Loading grants…</p>
+          ) : groups && groups.length > 0 ? (
+            <div className="space-y-1">
+              {groups.map((g, i) => (
+                <YearGroupRow
+                  key={g.year ?? "undated"}
+                  group={g}
+                  currency={currency}
+                  defaultOpen={i === 0}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="py-2 text-center text-[11px] text-muted-foreground">
+              No grant breakdown available for this recipient.
+            </p>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+function YearGroupRow({
+  group,
+  currency,
+  defaultOpen,
+}: {
+  group: YearGroup;
+  currency: DisplayCurrency;
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = React.useState(defaultOpen);
+  const label = group.year == null ? "Undated" : String(group.year);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="rounded-md border bg-background">
+      <CollapsibleTrigger className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-accent/50 transition-colors">
+        {open ? (
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <span className="text-xs font-semibold tabular-nums">{label}</span>
+        <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+          {group.count.toLocaleString()} {group.count === 1 ? "grant" : "grants"} · ≈ {fmtEur(group.sumEur, currency)}
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="data-[state=closed]:hidden">
+        <div className="space-y-1 px-2 pb-2 pt-0.5">
+          {group.rows.map((r) => {
+            const native = fmtNative(r.sumNative, r.nativeCurrency);
+            return (
+              <div
+                key={r.funderId}
+                className="flex items-center gap-2 rounded-md px-1.5 py-1"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-medium">{r.funderName}</span>
+                  <span className="block text-[10px] text-muted-foreground tabular-nums">
+                    {r.awardCount.toLocaleString()} {r.awardCount === 1 ? "grant" : "grants"}
+                  </span>
+                </span>
+                <span className="shrink-0 text-right">
+                  <span className="block text-xs font-semibold tabular-nums">
+                    ≈ {fmtEur(r.sumEur, currency)}
+                  </span>
+                  {native && (
+                    <span className="block text-[10px] text-muted-foreground tabular-nums">{native}</span>
+                  )}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

@@ -130,3 +130,22 @@ CREATE TABLE funding_subdivision (
   PRIMARY KEY (view, scope, level, subdivision)
 );
 CREATE INDEX idx_funding_subdivision_lookup ON funding_subdivision(view, scope, level);
+
+-- Per-recipient grant breakdown: one row per (recipient, award year, funder), so
+-- clicking a recipient shows all their grants grouped by year (sum + count per
+-- year) and, within a year, who paid and how much. Built only for recipients that
+-- appear in a funding_entity leaderboard (the clickable ones); totals are global
+-- (all funders/years/regions for that recipient), reconciling with received|ALL.
+DROP TABLE IF EXISTS funding_recipient_year;
+CREATE TABLE funding_recipient_year (
+  recipient_id    TEXT NOT NULL,
+  year            INTEGER,          -- award year (from awarded_at); NULL = undated
+  funder_id       TEXT NOT NULL,
+  funder_name     TEXT NOT NULL,
+  sum_eur         REAL NOT NULL,
+  award_count     INTEGER NOT NULL,
+  native_currency TEXT,             -- set only when the (recipient,year,funder) group is single-currency
+  sum_native      REAL,
+  PRIMARY KEY (recipient_id, year, funder_id)
+);
+CREATE INDEX idx_funding_recipient_year ON funding_recipient_year(recipient_id);

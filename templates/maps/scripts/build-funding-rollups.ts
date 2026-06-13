@@ -12,6 +12,10 @@
 //   funding_subdivision — per (view, scope, level, subdivision) totals for the
 //                         within-country Fylke choropleth + per-provider drill-down
 //                         (scope = country code for the aggregate, or funderId)
+//   funding_recipient_year — per (recipient, year, funder) grant breakdown for the
+//                         recipient-detail panel; built in a SECOND streaming pass
+//                         gated to the recipients that surfaced in a leaderboard
+//                         (bounded memory: surfaced recipients × years × funders)
 //
 // Correctness rules (see the plan):
 //   • recipient country = recipient_country ?? funder country (the {CC} prefix)
@@ -84,8 +88,23 @@ type Award = {
   instrument?: unknown;
   funder?: unknown;
   grantor_name_raw?: unknown;
+  awarded_at?: unknown;
+  paid_at?: unknown;
   fetched_at?: unknown;
 };
+
+// Award year for the per-recipient breakdown: prefer awarded_at, then paid_at,
+// then fetched_at; null when none yields a 4-digit year. Dates are ISO strings
+// ("2026-04-30") so the leading 4 chars are the year.
+function yearOf(...dates: (string | null)[]): number | null {
+  for (const d of dates) {
+    if (typeof d === "string" && /^\d{4}/.test(d)) {
+      const y = Number(d.slice(0, 4));
+      if (Number.isFinite(y)) return y;
+    }
+  }
+  return null;
+}
 
 // ── SQL literal helpers (mirror scripts/build-catalog.ts) ───────────────────
 function sqlStr(v: string | null | undefined): string {
@@ -219,6 +238,21 @@ type EntityAcc = {
   count: number;
   hist: Hist | null; // only tracked for funders (few); null for recipients
 };
+
+// Per-recipient grant breakdown: one bucket per (recipient, year, funder). Filled
+// in a second pass (processFileForBreakdown) gated to the surfaced recipient set,
+// so memory stays bounded (surfaced recipients × years × funders).
+type RecipientYearAcc = {
+  recipientId: string;
+  year: number | null;
+  funderId: string;
+  funderName: string;
+  sumEur: number;
+  sumNative: number;
+  count: number;
+  currencies: Set<string>;
+};
+const recipientYearAgg = new Map<string, RecipientYearAcc>();
 
 const countryAgg = new Map<string, CountryAcc>(); // `${view}|${country}` (+ `${view}|ALL`)
 const entityAgg = new Map<string, EntityAcc>(); // `${view}|${scope}|${type}|${id}`
@@ -517,6 +551,80 @@ function trackFetched(country: string, fetched: string): void {
   if (!cur || fetched > cur) countryFetched.set(country, fetched);
 }
 
+// Second pass: for each award whose recipient is in the surfaced set, accumulate a
+// global (recipient, year, funder) bucket. Re-applies the SAME guards as
+// processFile (funder, excluded countries, valid amount/currency, EUR conversion,
+// US grant-only filter) so the per-recipient totals reconcile with the leaderboard.
+async function processFileForBreakdown(
+  file: string,
+  surfaced: Set<string>,
+): Promise<void> {
+  const rl = readline.createInterface({
+    input: fs.createReadStream(file, { encoding: "utf8" }),
+    crlfDelay: Infinity,
+  });
+
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let a: Award;
+    try {
+      a = JSON.parse(trimmed) as Award;
+    } catch {
+      continue;
+    }
+
+    const recId =
+      typeof a.recipient_id === "string" && a.recipient_id ? a.recipient_id : null;
+    if (!recId || !surfaced.has(recId)) continue;
+
+    const funder = typeof a.funder === "string" ? a.funder : null;
+    if (!funder) continue;
+    const funderCC = funder.split("/")[0] || "INTL";
+    if (EXCLUDED_COUNTRIES.has(funderCC)) continue;
+
+    const amount =
+      typeof a.amount === "number" && Number.isFinite(a.amount) ? a.amount : null;
+    const currency = typeof a.currency === "string" ? a.currency : null;
+    if (amount === null || amount <= 0 || !currency) continue;
+    const eur = toEur(amount, currency);
+    if (eur === null) continue;
+
+    const instrument = typeof a.instrument === "string" ? a.instrument : null;
+    if (!includeInGrantRollup(funderCC, instrument)) continue;
+
+    const year = yearOf(
+      typeof a.awarded_at === "string" ? a.awarded_at : null,
+      typeof a.paid_at === "string" ? a.paid_at : null,
+      typeof a.fetched_at === "string" ? a.fetched_at : null,
+    );
+    const funderName =
+      typeof a.grantor_name_raw === "string" && a.grantor_name_raw.trim()
+        ? a.grantor_name_raw
+        : slugName(funder);
+
+    const key = `${recId}${year ?? ""}${funder}`;
+    let acc = recipientYearAgg.get(key);
+    if (!acc) {
+      acc = {
+        recipientId: recId,
+        year,
+        funderId: funder,
+        funderName,
+        sumEur: 0,
+        sumNative: 0,
+        count: 0,
+        currencies: new Set(),
+      };
+      recipientYearAgg.set(key, acc);
+    }
+    acc.sumEur += eur;
+    acc.sumNative += amount;
+    acc.count += 1;
+    acc.currencies.add(currency);
+  }
+}
+
 const stats = {
   files: 0,
   counted: 0,
@@ -622,6 +730,42 @@ async function main(): Promise<void> {
     });
   }
 
+  // ── funding_recipient_year rows: per (recipient, year, funder) ──
+  // Only recipients that surfaced in a leaderboard are clickable, so build the
+  // breakdown for that bounded set via a second streaming pass over the files.
+  const surfaced = new Set(
+    entityRows.filter((r) => r.type === "recipient").map((r) => r.id),
+  );
+  console.log(
+    `[build-funding] breakdown pass for ${surfaced.size.toLocaleString()} surfaced recipients …`,
+  );
+  for (const file of files) await processFileForBreakdown(file, surfaced);
+
+  type RecipientYearRow = {
+    recipientId: string;
+    year: number | null;
+    funderId: string;
+    funderName: string;
+    sumEur: number;
+    count: number;
+    nativeCurrency: string | null;
+    sumNative: number | null;
+  };
+  const recipientYearRows: RecipientYearRow[] = [];
+  for (const acc of recipientYearAgg.values()) {
+    const single = acc.currencies.size === 1 ? [...acc.currencies][0] : null;
+    recipientYearRows.push({
+      recipientId: acc.recipientId,
+      year: acc.year,
+      funderId: acc.funderId,
+      funderName: acc.funderName,
+      sumEur: Math.round(acc.sumEur),
+      count: acc.count,
+      nativeCurrency: single,
+      sumNative: single ? Math.round(acc.sumNative) : null,
+    });
+  }
+
   // ── funding_subdivision rows: per (view, scope, level, subdivision) ──
   type SubdivRow = {
     view: string;
@@ -723,10 +867,25 @@ async function main(): Promise<void> {
   out.push(
     "CREATE INDEX IF NOT EXISTS idx_funding_subdivision_lookup ON funding_subdivision(view, scope, level);",
   );
+  out.push(`CREATE TABLE IF NOT EXISTS funding_recipient_year (
+  recipient_id TEXT NOT NULL,
+  year INTEGER,                  -- award year (from awarded_at); NULL = undated
+  funder_id TEXT NOT NULL,
+  funder_name TEXT NOT NULL,
+  sum_eur REAL NOT NULL,
+  award_count INTEGER NOT NULL,
+  native_currency TEXT,
+  sum_native REAL,
+  PRIMARY KEY (recipient_id, year, funder_id)
+);`);
+  out.push(
+    "CREATE INDEX IF NOT EXISTS idx_funding_recipient_year ON funding_recipient_year(recipient_id);",
+  );
   out.push("DELETE FROM funding_entity;");
   out.push("DELETE FROM funding_country;");
   out.push("DELETE FROM funding_coverage;");
   out.push("DELETE FROM funding_subdivision;");
+  out.push("DELETE FROM funding_recipient_year;");
 
   emitInserts(
     out,
@@ -794,6 +953,24 @@ async function main(): Promise<void> {
       ].join(","),
   );
 
+  emitInserts(
+    out,
+    "funding_recipient_year",
+    "(recipient_id,year,funder_id,funder_name,sum_eur,award_count,native_currency,sum_native)",
+    recipientYearRows,
+    (r) =>
+      [
+        sqlStr(r.recipientId),
+        sqlNum(r.year),
+        sqlStr(r.funderId),
+        sqlStr(r.funderName),
+        sqlNum(r.sumEur),
+        sqlNum(r.count),
+        sqlStr(r.nativeCurrency),
+        sqlNum(r.sumNative),
+      ].join(","),
+  );
+
   fs.mkdirSync(path.dirname(OUT_SQL), { recursive: true });
   fs.writeFileSync(OUT_SQL, out.join("\n") + "\n");
 
@@ -807,7 +984,7 @@ async function main(): Promise<void> {
       (stats.unknownCurrencies.size
         ? ` [${[...stats.unknownCurrencies].join(", ")}]`
         : "") +
-      `\n  rows: country=${countryRows.length} entity=${entityRows.length} coverage=${coverageRows.length} subdivision=${subdivRows.length}` +
+      `\n  rows: country=${countryRows.length} entity=${entityRows.length} coverage=${coverageRows.length} subdivision=${subdivRows.length} recipient_year=${recipientYearRows.length}` +
       (allAwarded
         ? `\n  global awarded ≈ €${Math.round(allAwarded.sumEur).toLocaleString()} across ${allAwarded.count.toLocaleString()} awards`
         : ""),

@@ -519,6 +519,17 @@ export type FundingSubdivisionRow = {
   sum_native: number | null;
 };
 
+export type FundingRecipientYearRow = {
+  recipient_id: string;
+  year: number | null;
+  funder_id: string;
+  funder_name: string;
+  sum_eur: number;
+  award_count: number;
+  native_currency: string | null;
+  sum_native: number | null;
+};
+
 // Per-country (+ the 'ALL' global hero row) totals for one view, plus coverage
 // — drives the funding map bubbles and the hero. Single round-trip.
 export async function queryFundingAggregate(view: FundingView): Promise<{
@@ -580,5 +591,24 @@ export async function queryFundingSubdivisions(
     )
     .bind(view, scope, level)
     .all<FundingSubdivisionRow>();
+  return res.results;
+}
+
+// All grants a recipient received, as a per-(year, funder) breakdown — drives the
+// recipient-detail panel (grouped by year client-side). Global across all funders,
+// years and regions for that recipient. NULL years sort last; within a year, the
+// largest funder first.
+export async function queryFundingRecipientBreakdown(
+  recipientId: string,
+): Promise<FundingRecipientYearRow[]> {
+  const db = getDb();
+  const res = await db
+    .prepare(
+      `SELECT recipient_id,year,funder_id,funder_name,sum_eur,award_count,native_currency,sum_native
+       FROM funding_recipient_year WHERE recipient_id = ?
+       ORDER BY year IS NULL, year DESC, sum_eur DESC`,
+    )
+    .bind(recipientId)
+    .all<FundingRecipientYearRow>();
   return res.results;
 }

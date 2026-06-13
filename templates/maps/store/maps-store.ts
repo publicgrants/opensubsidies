@@ -14,6 +14,7 @@ import {
   fetchFundingAggregate,
   fetchFundingLeaderboard,
   fetchFundingSubdivisions,
+  fetchFundingRecipientBreakdown,
 } from "@/mock-data/locations";
 import type {
   Grant,
@@ -27,6 +28,7 @@ import type {
   FundingAggregate,
   FundingEntity,
   FundingSubdivision,
+  FundingRecipientYear,
   SubdivisionLevel,
 } from "@/mock-data/locations";
 import type { DisplayCurrency } from "@/lib/fx-rates";
@@ -122,6 +124,9 @@ interface GrantsState {
   selectedFundingEntityId: string | null;
   fundingAggregates: Partial<Record<FundingView, FundingAggregate>>;
   fundingLeaderboards: Record<string, FundingEntity[]>; // key `${view}|${scope}`
+  // All grants a recipient received, grouped year × funder. Keyed by recipientId
+  // (global; independent of the current scope). Loaded on selecting a recipient.
+  fundingRecipientBreakdowns: Record<string, FundingRecipientYear[]>;
   fundingLoading: boolean;
 
   // Subdivision (Fylke) layer — the within-country money-flow choropleth.
@@ -167,6 +172,7 @@ interface GrantsState {
     scope: string,
     level: SubdivisionLevel,
   ) => Promise<void>;
+  loadFundingRecipientDetail: (recipientId: string) => Promise<void>;
   setSubdivisionMetric: (m: SubdivisionMetric) => void;
   setSubdivisionLevel: (l: SubdivisionLevel) => void;
   setFundingProvider: (funderId: string | null) => void;
@@ -225,6 +231,7 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
   selectedFundingEntityId: null,
   fundingAggregates: {},
   fundingLeaderboards: {},
+  fundingRecipientBreakdowns: {},
   fundingLoading: false,
 
   subdivisionMetric: "sum",
@@ -490,6 +497,21 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
       }));
     } catch {
       /* subdivision layer stays empty on error */
+    }
+  },
+
+  loadFundingRecipientDetail: async (recipientId) => {
+    if (get().fundingRecipientBreakdowns[recipientId]) return; // cached
+    try {
+      const breakdown = await fetchFundingRecipientBreakdown(recipientId);
+      set((s) => ({
+        fundingRecipientBreakdowns: {
+          ...s.fundingRecipientBreakdowns,
+          [recipientId]: breakdown,
+        },
+      }));
+    } catch {
+      /* breakdown stays empty on error */
     }
   },
 

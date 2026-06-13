@@ -342,6 +342,19 @@ export type FundingSubdivision = {
   sumNative: number | null;
 };
 
+// One (year, funder) bucket of a recipient's grants — the recipient-detail panel
+// groups these by year. `year` is null for undated awards.
+export type FundingRecipientYear = {
+  recipientId: string;
+  year: number | null;
+  funderId: string;
+  funderName: string;
+  sumEur: number;
+  awardCount: number;
+  nativeCurrency: string | null;
+  sumNative: number | null;
+};
+
 export type FundingAggregate = {
   countries: FundingCountry[];
   coverage: FundingCoverage[];
@@ -383,6 +396,16 @@ type FundingSubdivisionRow = {
   sum_eur: number;
   award_count: number;
   median_eur: number | null;
+  native_currency: string | null;
+  sum_native: number | null;
+};
+type FundingRecipientYearRow = {
+  recipient_id: string;
+  year: number | null;
+  funder_id: string;
+  funder_name: string;
+  sum_eur: number;
+  award_count: number;
   native_currency: string | null;
   sum_native: number | null;
 };
@@ -476,4 +499,31 @@ export async function fetchFundingSubdivisions(
     throw new Error(`Failed to load funding subdivisions (${res.status})`);
   const data = (await res.json()) as { subdivisions: FundingSubdivisionRow[] };
   return data.subdivisions.map(mapFundingSubdivision);
+}
+
+function mapFundingRecipientYear(r: FundingRecipientYearRow): FundingRecipientYear {
+  return {
+    recipientId: r.recipient_id,
+    year: r.year,
+    funderId: r.funder_id,
+    funderName: r.funder_name,
+    sumEur: r.sum_eur,
+    awardCount: r.award_count,
+    nativeCurrency: r.native_currency,
+    sumNative: r.sum_native,
+  };
+}
+
+// All grants a recipient received, as a flat (year, funder) breakdown. The caller
+// groups by year; rows arrive year-desc (undated last), largest funder first.
+export async function fetchFundingRecipientBreakdown(
+  recipientId: string,
+): Promise<FundingRecipientYear[]> {
+  const res = await fetch(
+    `/api/funding?recipient=${encodeURIComponent(recipientId)}`,
+  );
+  if (!res.ok)
+    throw new Error(`Failed to load recipient breakdown (${res.status})`);
+  const data = (await res.json()) as { breakdown: FundingRecipientYearRow[] };
+  return data.breakdown.map(mapFundingRecipientYear);
 }

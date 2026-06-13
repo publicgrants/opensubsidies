@@ -42,9 +42,14 @@ const NORWAY_VIEW = { center: [14, 65] as [number, number], zoom: 3.6 };
 // `subdivision` codes). City/poststed has no polygon geometry, so the map falls
 // back to the kommune layer for it (city granularity still drives leaderboards).
 const MAP_LEVELS: Record<
-  "fylke" | "kommune",
+  "world" | "fylke" | "kommune",
   { file: string; codeOf: (props: Record<string, unknown>) => string }
 > = {
+  // Discover view: whole-globe country choropleth, joined by ISO 3166-1 alpha-2.
+  world: {
+    file: "/geo/world-countries.json",
+    codeOf: (p) => String(p.code ?? ""),
+  },
   fylke: {
     file: "/geo/no-fylker.json",
     codeOf: (p) => `NO-${p.fylkesnummer ?? ""}`,
@@ -55,6 +60,25 @@ const MAP_LEVELS: Record<
   },
 };
 type MapLevel = keyof typeof MAP_LEVELS;
+
+// Discover (provider/scheme density) colour ramp — distinct from the funding
+// received/awarded ramps.
+const DISCOVER_RAMP: [string, string] = ["#e0e7ff", "#4338ca"];
+
+// Supranational funder "countries" have no single polygon — kept off the world
+// choropleth and surfaced as offshore flag markers instead. EU sits in the
+// Atlantic next to Europe; the others are parked nearby in open ocean.
+const SUPRA_MARKERS: {
+  code: string;
+  label: string;
+  emoji: string;
+  at: { lng: number; lat: number };
+}[] = [
+  { code: "EU", label: "EU", emoji: "🇪🇺", at: { lng: -24, lat: 47 } },
+  { code: "CoE", label: "Council of Europe", emoji: "🏛️", at: { lng: -24, lat: 41 } },
+  { code: "INTL", label: "International", emoji: "🌐", at: { lng: -38, lat: 33 } },
+];
+const SUPRANATIONAL = new Set(SUPRA_MARKERS.map((m) => m.code));
 
 const MAP_STYLES = {
   light: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
@@ -198,6 +222,7 @@ export function MapView() {
     subdivisionMetric,
     subdivisionLevel,
     fundingSubdivisions,
+    setSelectedCountry,
   } = useGrantsStore();
 
   const getMapStyleUrl = React.useCallback(() => {
@@ -247,42 +272,70 @@ export function MapView() {
     [fundingAgg, displayCurrency],
   );
 
-  // ── Fylke choropleth (within-Norway money flow) ──────────────────────────
-  // Active when a funding view is focused on Norway (scope NO / a NO-xx Fylke)
-  // OR a provider is drilled into (its received-by-Fylke flow). Provider flow is
-  // always a "received" question. Resolves the right cached subdivision rows.
-  const isFundingView = panelView === "received" || panelView === "awarded";
-  const choroplethView: "received" | "awarded" =
-    fundingProviderId ? "received" : panelView === "awarded" ? "awarded" : "received";
-  const choroplethScope = fundingProviderId
-    ? fundingProviderId
-    : fundingScope &&
-        (fundingScope === "NO" ||
-          fundingScope.startsWith("NO-") ||
-          /^\d{4}$/.test(fundingScope))
-      ? "NO"
-      : null;
-  const choroplethActive = isFundingView && choroplethScope !== null;
-  const choroplethData = React.useMemo(() => {
-    if (!choroplethActive || !choroplethScope) return [];
-    const key = `${choroplethView}|${choroplethScope}|${subdivisionLevel}`;
-    return fundingSubdivisions[key] ?? [];
+  // ── Unified choropleth spec ──────────────────────────────────────────────
+  // One feature-state engine drives the whole globe:
+  //  • discover → WORLD country choropleth coloured by provider/scheme density
+  //  • received/awarded (focused on Norway / a provider) → Fylke/Kommune money flow
+  // `data` is a code→value map (code = the geometry's join code = feature id).
+  const choro = React.useMemo<{
+    active: boolean;
+    level: MapLevel;
+    kind: "discover" | "funding";
+    data: Map<string, number>;
+    ramp: [string, string];
+  }>(() => {
+    if (panelView === "discover") {
+      const data = new Map<string, number>();
+      for (const f of funders) {
+        if (SUPRANATIONAL.has(f.country)) continue; // EU etc. → ocean flag marker
+        const inc = metricMode === "schemes" ? f.schemes || 0 : 1; // else provider count
+        data.set(f.country, (data.get(f.country) ?? 0) + inc);
+      }
+      return { active: true, level: "world", kind: "discover", data, ramp: DISCOVER_RAMP };
+    }
+    // Funding views: Norway Fylke/Kommune money flow.
+    const scope = fundingProviderId
+      ? fundingProviderId
+      : fundingScope &&
+          (fundingScope === "NO" ||
+            fundingScope.startsWith("NO-") ||
+            /^\d{4}$/.test(fundingScope))
+        ? "NO"
+        : null;
+    const view: "received" | "awarded" = fundingProviderId
+      ? "received"
+      : panelView === "awarded"
+        ? "awarded"
+        : "received";
+    if (!scope) {
+      return { active: false, level: "fylke", kind: "funding", data: new Map(), ramp: CHOROPLETH_RAMP.received };
+    }
+    const rows = fundingSubdivisions[`${view}|${scope}|${subdivisionLevel}`] ?? [];
+    const data = new Map<string, number>();
+    for (const d of rows)
+      data.set(d.subdivision, subdivisionMetric === "count" ? d.awardCount : d.sumEur);
+    const level: MapLevel = subdivisionLevel === "fylke" ? "fylke" : "kommune";
+    return { active: true, level, kind: "funding", data, ramp: CHOROPLETH_RAMP[view] };
   }, [
-    choroplethActive,
-    choroplethScope,
-    choroplethView,
+    panelView,
+    funders,
+    metricMode,
+    fundingProviderId,
+    fundingScope,
     subdivisionLevel,
+    subdivisionMetric,
     fundingSubdivisions,
   ]);
 
-  // Lazily-loaded GeoJSON per geometry level (Fylke / Kommune).
+  const choroplethActive = choro.active;
+  const mapLevel: MapLevel = choro.level;
+
+  // Lazily-loaded GeoJSON per geometry level (World / Fylke / Kommune).
   const geoRef = React.useRef<Partial<Record<MapLevel, GeoJSON.FeatureCollection>>>(
     {},
   );
   const choroplethPopupRef = React.useRef<maplibregl.Popup | null>(null);
   const prevActiveRef = React.useRef(false);
-  // City/poststed has no polygons → render it on the kommune geometry.
-  const mapLevel: MapLevel = subdivisionLevel === "fylke" ? "fylke" : "kommune";
   // Which geometry is currently uploaded to the single choropleth source — so we
   // only re-upload polygons when the LEVEL changes, never on a colour change.
   const loadedLevelRef = React.useRef<MapLevel | null>(null);
@@ -344,14 +397,24 @@ export function MapView() {
   const FYLKE_LINE = "no-fylker-line";
 
   // Latest render context for the (once-registered) map event handlers, so they
-  // never read stale metric / view / provider values.
-  const choroCtxRef = React.useRef({
-    metric: subdivisionMetric as "sum" | "count",
+  // never read stale metric / view / provider / kind values.
+  const choroCtxRef = React.useRef<{
+    metric: "sum" | "count";
+    kind: "discover" | "funding";
+    metricMode: string;
+    provider: boolean;
+    displayCurrency: DisplayCurrency;
+  }>({
+    metric: subdivisionMetric,
+    kind: "discover",
+    metricMode,
     provider: false,
-    displayCurrency: displayCurrency as DisplayCurrency,
+    displayCurrency,
   });
   choroCtxRef.current = {
     metric: subdivisionMetric,
+    kind: choro.kind,
+    metricMode,
     provider: !!fundingProviderId,
     displayCurrency,
   };
@@ -359,9 +422,15 @@ export function MapView() {
   const fmtChoroplethVal = React.useCallback(
     (val: number, has: boolean): string => {
       if (!has) return "no data";
-      if (choroCtxRef.current.metric === "count")
+      const ctx = choroCtxRef.current;
+      // Discover (world) values are provider/scheme COUNTS, not money.
+      if (ctx.kind === "discover") {
+        const noun = ctx.metricMode === "schemes" ? "schemes" : "providers";
+        return `${Math.round(val).toLocaleString()} ${noun}`;
+      }
+      if (ctx.metric === "count")
         return `${Math.round(val).toLocaleString()} awards`;
-      const cur = choroCtxRef.current.displayCurrency;
+      const cur = ctx.displayCurrency;
       const body = fromEur(val, cur);
       const compact =
         body >= 1e9
@@ -379,11 +448,18 @@ export function MapView() {
   const onFylkeClick = React.useCallback(
     (e: maplibregl.MapLayerMouseEvent) => {
       const code = e.features?.[0]?.properties?._code as string | undefined;
-      // Aggregate mode → drill into the Fylke's recipients. Provider mode keeps
-      // the provider's flow on screen (no per-Fylke recipient rollup yet).
-      if (code && !choroCtxRef.current.provider) setFundingScope(code);
+      if (!code) return;
+      const ctx = choroCtxRef.current;
+      if (ctx.kind === "discover") {
+        // Click a country → filter the schemes list to it.
+        setSelectedCountry(code);
+      } else if (!ctx.provider) {
+        // Funding aggregate mode → drill into the Fylke's recipients.
+        // (Provider mode keeps the provider's flow on screen.)
+        setFundingScope(code);
+      }
     },
-    [setFundingScope],
+    [setFundingScope, setSelectedCountry],
   );
 
   const onFylkeHover = React.useCallback((e: maplibregl.MapLayerMouseEvent) => {
@@ -392,11 +468,12 @@ export function MapView() {
     if (!map || !f) return;
     map.getCanvas().style.cursor = "pointer";
     const code = f.properties?._code as string;
+    // The geometry carries a display name (country / Fylke / Kommune); fall back
+    // to the subdivision label table.
+    const name = (f.properties?.name as string) || subdivisionLabel(code);
     const v = valByCodeRef.current.get(code);
     const has = v != null;
-    const html = `<div class="px-2 py-1 text-xs"><div class="font-medium">${subdivisionLabel(
-      code,
-    )}</div><div class="tabular-nums text-muted-foreground">${fmtChoroplethVal(
+    const html = `<div class="px-2 py-1 text-xs"><div class="font-medium">${name}</div><div class="tabular-nums text-muted-foreground">${fmtChoroplethVal(
       v ?? 0,
       has,
     )}</div></div>`;
@@ -438,14 +515,10 @@ export function MapView() {
       return;
     }
 
-    // Active-metric value per region code (= feature id via promoteId).
-    const valByCode = new Map<string, number>();
+    // Active value per region code (= feature id via promoteId).
+    const valByCode = choro.data;
     let max = 0;
-    for (const d of choroplethData) {
-      const v = subdivisionMetric === "count" ? d.awardCount : d.sumEur;
-      valByCode.set(d.subdivision, v);
-      if (v > max) max = v;
-    }
+    for (const v of valByCode.values()) if (v > max) max = v;
     valByCodeRef.current = valByCode;
 
     // Source + layers are created ONCE. `promoteId: "_code"` makes each region's
@@ -487,7 +560,7 @@ export function MapView() {
       map.setFeatureState({ source: FYLKE_SRC, id: code }, { val: v, has: 1 });
     }
 
-    const [c0, c1] = CHOROPLETH_RAMP[choroplethView];
+    const [c0, c1] = choro.ramp;
     const hi = max > 0 ? max : 1;
     map.setPaintProperty(FYLKE_FILL, "fill-color", [
       "interpolate",
@@ -508,9 +581,7 @@ export function MapView() {
     map.setLayoutProperty(FYLKE_LINE, "visibility", "visible");
   }, [
     choroplethActive,
-    choroplethData,
-    choroplethView,
-    subdivisionMetric,
+    choro,
     mapLevel,
     onFylkeClick,
     onFylkeHover,
@@ -556,9 +627,11 @@ export function MapView() {
     applyChoropleth();
   }, [applyChoropleth]);
 
-  // Fly to Norway when the choropleth first activates.
+  // Fly to Norway only when a FUNDING choropleth first activates (discover is the
+  // whole-world view, so it stays at the global camera).
   React.useEffect(() => {
-    if (choroplethActive && !prevActiveRef.current && mapRef.current) {
+    const flyFunding = choro.active && choro.kind === "funding";
+    if (flyFunding && !prevActiveRef.current && mapRef.current) {
       isAnimatingRef.current = true;
       mapRef.current.flyTo({
         center: NORWAY_VIEW.center,
@@ -566,8 +639,67 @@ export function MapView() {
         essential: true,
       });
     }
-    prevActiveRef.current = choroplethActive;
-  }, [choroplethActive]);
+    prevActiveRef.current = flyFunding;
+  }, [choro]);
+
+  // Supranational funders (EU / CoE / INTL) have no country polygon, so on the
+  // discover world map each is surfaced as a flag marker parked offshore (EU in
+  // the Atlantic next to Europe; the rest nearby). Click → filter the schemes
+  // list to that funder group.
+  const supraMarkersRef = React.useRef<Map<string, maplibregl.Marker>>(new Map());
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const markers = supraMarkersRef.current;
+    const clearAll = () => {
+      markers.forEach((m) => m.remove());
+      markers.clear();
+    };
+    if (panelView !== "discover") return clearAll();
+
+    // Scheme totals per supranational code.
+    const schemesByCode = new Map<string, number>();
+    for (const f of funders) {
+      if (SUPRANATIONAL.has(f.country)) {
+        schemesByCode.set(f.country, (schemesByCode.get(f.country) ?? 0) + (f.schemes || 0));
+      }
+    }
+
+    for (const spec of SUPRA_MARKERS) {
+      const schemes = schemesByCode.get(spec.code) ?? 0;
+      const existing = markers.get(spec.code);
+      if (schemes === 0) {
+        // No funders for this group → no marker.
+        if (existing) {
+          existing.remove();
+          markers.delete(spec.code);
+        }
+        continue;
+      }
+      if (!existing) {
+        const el = document.createElement("button");
+        el.type = "button";
+        el.title = `${spec.label} funders — click to see their grant schemes`;
+        el.style.cssText =
+          "display:flex;align-items:center;gap:5px;background:#1b3a8c;color:#fff;" +
+          "border:1px solid rgba(255,255,255,0.55);border-radius:9999px;padding:3px 9px;" +
+          "font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;" +
+          "box-shadow:0 2px 6px rgba(0,0,0,0.35);";
+        el.innerHTML = `<span style="font-size:14px;line-height:1">${spec.emoji}</span><span class="supra-count"></span>`;
+        el.addEventListener("click", () => setSelectedCountry(spec.code));
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([spec.at.lng, spec.at.lat])
+          .addTo(map);
+        markers.set(spec.code, marker);
+      }
+      const countEl = markers
+        .get(spec.code)!
+        .getElement()
+        .querySelector(".supra-count");
+      if (countEl)
+        countEl.textContent = `${spec.label} · ${schemes.toLocaleString()} schemes`;
+    }
+  }, [panelView, funders, setSelectedCountry]);
 
   // Initialize map once
   React.useEffect(() => {
@@ -822,7 +954,15 @@ export function MapView() {
     markersRef.current.forEach((m) => m.remove());
     markersRef.current.clear();
 
-    const map = mapRef.current;
+    // Choropleth-only globe: the discover (world country) and funding
+    // (Fylke/Kommune) views are BOTH rendered as fill layers by applyChoropleth.
+    // We no longer place continent/country/cluster bubbles or grant pins. The
+    // tier code below is retained but unreachable, to ease re-enabling pins later.
+    return;
+
+    // (Unreachable — retained for easy pin re-enable. `!` since control-flow
+    // narrowing from the guard above doesn't carry past the early return.)
+    const map = mapRef.current!;
     const tier = tierForZoom(mapZoom);
 
     // Funding views render one consistent layer of money-sized country bubbles
