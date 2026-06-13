@@ -283,6 +283,12 @@ export function MapView() {
   const prevActiveRef = React.useRef(false);
   // City/poststed has no polygons → render it on the kommune geometry.
   const mapLevel: MapLevel = subdivisionLevel === "fylke" ? "fylke" : "kommune";
+  // Which geometry is currently uploaded to the single choropleth source — so we
+  // only re-upload polygons when the LEVEL changes, never on a colour change.
+  const loadedLevelRef = React.useRef<MapLevel | null>(null);
+  // Active metric value per region code, for the (once-registered) hover handler
+  // (values now live in feature-state, not in feature properties).
+  const valByCodeRef = React.useRef<Map<string, number>>(new Map());
 
   // Resolve user location once, but DON'T re-center the map — OpenSubsidies
   // is a global dashboard that should default to a world view.
@@ -386,12 +392,12 @@ export function MapView() {
     if (!map || !f) return;
     map.getCanvas().style.cursor = "pointer";
     const code = f.properties?._code as string;
-    const val = Number(f.properties?._val ?? 0);
-    const has = Number(f.properties?._has ?? 0) === 1;
+    const v = valByCodeRef.current.get(code);
+    const has = v != null;
     const html = `<div class="px-2 py-1 text-xs"><div class="font-medium">${subdivisionLabel(
       code,
     )}</div><div class="tabular-nums text-muted-foreground">${fmtChoroplethVal(
-      val,
+      v ?? 0,
       has,
     )}</div></div>`;
     if (!choroplethPopupRef.current) {
@@ -432,36 +438,23 @@ export function MapView() {
       return;
     }
 
+    // Active-metric value per region code (= feature id via promoteId).
     const valByCode = new Map<string, number>();
-    for (const d of choroplethData) {
-      valByCode.set(
-        d.subdivision,
-        subdivisionMetric === "count" ? d.awardCount : d.sumEur,
-      );
-    }
-    const codeOf = MAP_LEVELS[mapLevel].codeOf;
     let max = 0;
-    const features = geo.features.map((f) => {
-      const code = codeOf(f.properties ?? {});
-      const val = valByCode.get(code);
-      if (val != null && val > max) max = val;
-      return {
-        ...f,
-        properties: {
-          ...f.properties,
-          _code: code,
-          _val: val ?? 0,
-          _has: val != null ? 1 : 0,
-        },
-      };
-    });
-    const merged = {
-      type: "FeatureCollection",
-      features,
-    } as GeoJSON.FeatureCollection;
+    for (const d of choroplethData) {
+      const v = subdivisionMetric === "count" ? d.awardCount : d.sumEur;
+      valByCode.set(d.subdivision, v);
+      if (v > max) max = v;
+    }
+    valByCodeRef.current = valByCode;
 
+    // Source + layers are created ONCE. `promoteId: "_code"` makes each region's
+    // join code its feature id, so colours are driven by feature-state. Geometry
+    // is only re-uploaded when the LEVEL changes (different polygons); a metric
+    // or data change updates feature-state only — no re-tessellation, no GPU
+    // re-upload (the cheap path the perf review recommended).
     if (!map.getSource(FYLKE_SRC)) {
-      map.addSource(FYLKE_SRC, { type: "geojson", data: merged });
+      map.addSource(FYLKE_SRC, { type: "geojson", data: geo, promoteId: "_code" });
       map.addLayer({
         id: FYLKE_FILL,
         type: "fill",
@@ -481,8 +474,17 @@ export function MapView() {
       map.on("click", FYLKE_FILL, onFylkeClick);
       map.on("mousemove", FYLKE_FILL, onFylkeHover);
       map.on("mouseleave", FYLKE_FILL, onFylkeLeave);
-    } else {
-      (map.getSource(FYLKE_SRC) as maplibregl.GeoJSONSource).setData(merged);
+      loadedLevelRef.current = mapLevel;
+    } else if (loadedLevelRef.current !== mapLevel) {
+      // Level changed → swap polygons (the only case that re-uploads geometry).
+      (map.getSource(FYLKE_SRC) as maplibregl.GeoJSONSource).setData(geo);
+      loadedLevelRef.current = mapLevel;
+    }
+
+    // Re-colour via feature-state: clear, then set val/has for regions with data.
+    map.removeFeatureState({ source: FYLKE_SRC });
+    for (const [code, v] of valByCode) {
+      map.setFeatureState({ source: FYLKE_SRC, id: code }, { val: v, has: 1 });
     }
 
     const [c0, c1] = CHOROPLETH_RAMP[choroplethView];
@@ -490,7 +492,7 @@ export function MapView() {
     map.setPaintProperty(FYLKE_FILL, "fill-color", [
       "interpolate",
       ["linear"],
-      ["get", "_val"],
+      ["coalesce", ["feature-state", "val"], 0],
       0,
       c0,
       hi,
@@ -498,7 +500,7 @@ export function MapView() {
     ]);
     map.setPaintProperty(FYLKE_FILL, "fill-opacity", [
       "case",
-      ["==", ["get", "_has"], 1],
+      ["==", ["coalesce", ["feature-state", "has"], 0], 1],
       0.78,
       0.05,
     ]);
@@ -533,6 +535,13 @@ export function MapView() {
       .then((r) => r.json())
       .then((g: GeoJSON.FeatureCollection) => {
         if (cancelled) return;
+        // Bake the join code into each feature so `promoteId: "_code"` can use it
+        // as the feature id for feature-state colouring.
+        const codeOf = MAP_LEVELS[mapLevel].codeOf;
+        g.features = g.features.map((f) => ({
+          ...f,
+          properties: { ...f.properties, _code: codeOf(f.properties ?? {}) },
+        }));
         geoRef.current[mapLevel] = g;
         applyChoroplethRef.current();
       })
