@@ -12,6 +12,7 @@ export {
   fetchGrantProse,
   fetchFundingAggregate,
   fetchFundingLeaderboard,
+  fetchFundingSubdivisions,
 } from "./catalog-loader";
 
 export type {
@@ -29,4 +30,6 @@ export type {
   FundingEntity,
   FundingCoverage,
   FundingAggregate,
+  FundingSubdivision,
+  SubdivisionLevel,
 } from "./catalog-loader";

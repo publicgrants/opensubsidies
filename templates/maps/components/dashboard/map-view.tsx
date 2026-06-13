@@ -26,6 +26,35 @@ import {
   tierForZoom,
 } from "@/lib/clustering";
 import { createClusterMarkerElement } from "@/components/dashboard/map-cluster-marker";
+import { subdivisionLabel } from "@/mock-data/subdivisions";
+import { fromEur, CURRENCY_SYMBOL, type DisplayCurrency } from "@/lib/fx-rates";
+
+// Fylke choropleth colour ramps (light → strong) by money direction. Received
+// (money landing) uses an emerald ramp; awarded (money leaving) an orange one.
+const CHOROPLETH_RAMP: Record<"received" | "awarded", [string, string]> = {
+  received: ["#d1fae5", "#047857"],
+  awarded: ["#ffedd5", "#c2410c"],
+};
+const NORWAY_VIEW = { center: [14, 65] as [number, number], zoom: 3.6 };
+
+// Geometry-backed subdivision levels. Each maps a GeoJSON file + a function that
+// derives the join code from a feature's properties (matching the rollup's
+// `subdivision` codes). City/poststed has no polygon geometry, so the map falls
+// back to the kommune layer for it (city granularity still drives leaderboards).
+const MAP_LEVELS: Record<
+  "fylke" | "kommune",
+  { file: string; codeOf: (props: Record<string, unknown>) => string }
+> = {
+  fylke: {
+    file: "/geo/no-fylker.json",
+    codeOf: (p) => `NO-${p.fylkesnummer ?? ""}`,
+  },
+  kommune: {
+    file: "/geo/no-kommuner.json",
+    codeOf: (p) => String(p.kommunenummer ?? ""),
+  },
+};
+type MapLevel = keyof typeof MAP_LEVELS;
 
 const MAP_STYLES = {
   light: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
@@ -142,7 +171,6 @@ export function MapView() {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const mapRef = React.useRef<maplibregl.Map | null>(null);
   const markersRef = React.useRef<Map<string, maplibregl.Marker>>(new Map());
-  const userMarkerRef = React.useRef<maplibregl.Marker | null>(null);
   const popupRef = React.useRef<maplibregl.Popup | null>(null);
   const isAnimatingRef = React.useRef(false);
   const closeTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
@@ -157,7 +185,6 @@ export function MapView() {
     setMapZoom,
     selectGrant,
     selectedGrantId,
-    userLocation,
     setUserLocation,
     getFilteredGrants,
     metricMode,
@@ -166,6 +193,11 @@ export function MapView() {
     displayCurrency,
     fundingAggregates,
     setFundingScope,
+    fundingScope,
+    fundingProviderId,
+    subdivisionMetric,
+    subdivisionLevel,
+    fundingSubdivisions,
   } = useGrantsStore();
 
   const getMapStyleUrl = React.useCallback(() => {
@@ -215,6 +247,43 @@ export function MapView() {
     [fundingAgg, displayCurrency],
   );
 
+  // ── Fylke choropleth (within-Norway money flow) ──────────────────────────
+  // Active when a funding view is focused on Norway (scope NO / a NO-xx Fylke)
+  // OR a provider is drilled into (its received-by-Fylke flow). Provider flow is
+  // always a "received" question. Resolves the right cached subdivision rows.
+  const isFundingView = panelView === "received" || panelView === "awarded";
+  const choroplethView: "received" | "awarded" =
+    fundingProviderId ? "received" : panelView === "awarded" ? "awarded" : "received";
+  const choroplethScope = fundingProviderId
+    ? fundingProviderId
+    : fundingScope &&
+        (fundingScope === "NO" ||
+          fundingScope.startsWith("NO-") ||
+          /^\d{4}$/.test(fundingScope))
+      ? "NO"
+      : null;
+  const choroplethActive = isFundingView && choroplethScope !== null;
+  const choroplethData = React.useMemo(() => {
+    if (!choroplethActive || !choroplethScope) return [];
+    const key = `${choroplethView}|${choroplethScope}|${subdivisionLevel}`;
+    return fundingSubdivisions[key] ?? [];
+  }, [
+    choroplethActive,
+    choroplethScope,
+    choroplethView,
+    subdivisionLevel,
+    fundingSubdivisions,
+  ]);
+
+  // Lazily-loaded GeoJSON per geometry level (Fylke / Kommune).
+  const geoRef = React.useRef<Partial<Record<MapLevel, GeoJSON.FeatureCollection>>>(
+    {},
+  );
+  const choroplethPopupRef = React.useRef<maplibregl.Popup | null>(null);
+  const prevActiveRef = React.useRef(false);
+  // City/poststed has no polygons → render it on the kommune geometry.
+  const mapLevel: MapLevel = subdivisionLevel === "fylke" ? "fylke" : "kommune";
+
   // Resolve user location once, but DON'T re-center the map — OpenSubsidies
   // is a global dashboard that should default to a world view.
   React.useEffect(() => {
@@ -263,6 +332,234 @@ export function MapView() {
     }, 150);
   }, []);
 
+  // ── Fylke choropleth plumbing ────────────────────────────────────────────
+  const FYLKE_SRC = "no-fylker";
+  const FYLKE_FILL = "no-fylker-fill";
+  const FYLKE_LINE = "no-fylker-line";
+
+  // Latest render context for the (once-registered) map event handlers, so they
+  // never read stale metric / view / provider values.
+  const choroCtxRef = React.useRef({
+    metric: subdivisionMetric as "sum" | "count",
+    provider: false,
+    displayCurrency: displayCurrency as DisplayCurrency,
+  });
+  choroCtxRef.current = {
+    metric: subdivisionMetric,
+    provider: !!fundingProviderId,
+    displayCurrency,
+  };
+
+  const fmtChoroplethVal = React.useCallback(
+    (val: number, has: boolean): string => {
+      if (!has) return "no data";
+      if (choroCtxRef.current.metric === "count")
+        return `${Math.round(val).toLocaleString()} awards`;
+      const cur = choroCtxRef.current.displayCurrency;
+      const body = fromEur(val, cur);
+      const compact =
+        body >= 1e9
+          ? `${(body / 1e9).toFixed(1)}B`
+          : body >= 1e6
+            ? `${(body / 1e6).toFixed(1)}M`
+            : body >= 1e3
+              ? `${(body / 1e3).toFixed(0)}K`
+              : `${Math.round(body)}`;
+      return cur === "NOK" ? `${compact} kr` : `${CURRENCY_SYMBOL[cur]}${compact}`;
+    },
+    [],
+  );
+
+  const onFylkeClick = React.useCallback(
+    (e: maplibregl.MapLayerMouseEvent) => {
+      const code = e.features?.[0]?.properties?._code as string | undefined;
+      // Aggregate mode → drill into the Fylke's recipients. Provider mode keeps
+      // the provider's flow on screen (no per-Fylke recipient rollup yet).
+      if (code && !choroCtxRef.current.provider) setFundingScope(code);
+    },
+    [setFundingScope],
+  );
+
+  const onFylkeHover = React.useCallback((e: maplibregl.MapLayerMouseEvent) => {
+    const map = mapRef.current;
+    const f = e.features?.[0];
+    if (!map || !f) return;
+    map.getCanvas().style.cursor = "pointer";
+    const code = f.properties?._code as string;
+    const val = Number(f.properties?._val ?? 0);
+    const has = Number(f.properties?._has ?? 0) === 1;
+    const html = `<div class="px-2 py-1 text-xs"><div class="font-medium">${subdivisionLabel(
+      code,
+    )}</div><div class="tabular-nums text-muted-foreground">${fmtChoroplethVal(
+      val,
+      has,
+    )}</div></div>`;
+    if (!choroplethPopupRef.current) {
+      choroplethPopupRef.current = new maplibregl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        className: "location-hover-popup",
+      });
+    }
+    choroplethPopupRef.current.setLngLat(e.lngLat).setHTML(html).addTo(map);
+  }, [fmtChoroplethVal]);
+
+  const onFylkeLeave = React.useCallback(() => {
+    const map = mapRef.current;
+    if (map) map.getCanvas().style.cursor = "";
+    if (choroplethPopupRef.current) {
+      choroplethPopupRef.current.remove();
+      choroplethPopupRef.current = null;
+    }
+  }, []);
+
+  // Build the data-join + paint and toggle visibility. Safe to call repeatedly;
+  // re-adds the source/layers after a style reload (theme / basemap switch).
+  const applyChoropleth = React.useCallback(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const geo = geoRef.current[mapLevel];
+
+    if (!geo || !choroplethActive) {
+      if (map.getLayer(FYLKE_FILL))
+        map.setLayoutProperty(FYLKE_FILL, "visibility", "none");
+      if (map.getLayer(FYLKE_LINE))
+        map.setLayoutProperty(FYLKE_LINE, "visibility", "none");
+      if (choroplethPopupRef.current) {
+        choroplethPopupRef.current.remove();
+        choroplethPopupRef.current = null;
+      }
+      return;
+    }
+
+    const valByCode = new Map<string, number>();
+    for (const d of choroplethData) {
+      valByCode.set(
+        d.subdivision,
+        subdivisionMetric === "count" ? d.awardCount : d.sumEur,
+      );
+    }
+    const codeOf = MAP_LEVELS[mapLevel].codeOf;
+    let max = 0;
+    const features = geo.features.map((f) => {
+      const code = codeOf(f.properties ?? {});
+      const val = valByCode.get(code);
+      if (val != null && val > max) max = val;
+      return {
+        ...f,
+        properties: {
+          ...f.properties,
+          _code: code,
+          _val: val ?? 0,
+          _has: val != null ? 1 : 0,
+        },
+      };
+    });
+    const merged = {
+      type: "FeatureCollection",
+      features,
+    } as GeoJSON.FeatureCollection;
+
+    if (!map.getSource(FYLKE_SRC)) {
+      map.addSource(FYLKE_SRC, { type: "geojson", data: merged });
+      map.addLayer({
+        id: FYLKE_FILL,
+        type: "fill",
+        source: FYLKE_SRC,
+        paint: { "fill-color": "#cccccc", "fill-opacity": 0 },
+      });
+      map.addLayer({
+        id: FYLKE_LINE,
+        type: "line",
+        source: FYLKE_SRC,
+        paint: {
+          "line-color": "#ffffff",
+          "line-width": 0.6,
+          "line-opacity": 0.7,
+        },
+      });
+      map.on("click", FYLKE_FILL, onFylkeClick);
+      map.on("mousemove", FYLKE_FILL, onFylkeHover);
+      map.on("mouseleave", FYLKE_FILL, onFylkeLeave);
+    } else {
+      (map.getSource(FYLKE_SRC) as maplibregl.GeoJSONSource).setData(merged);
+    }
+
+    const [c0, c1] = CHOROPLETH_RAMP[choroplethView];
+    const hi = max > 0 ? max : 1;
+    map.setPaintProperty(FYLKE_FILL, "fill-color", [
+      "interpolate",
+      ["linear"],
+      ["get", "_val"],
+      0,
+      c0,
+      hi,
+      c1,
+    ]);
+    map.setPaintProperty(FYLKE_FILL, "fill-opacity", [
+      "case",
+      ["==", ["get", "_has"], 1],
+      0.78,
+      0.05,
+    ]);
+    map.setLayoutProperty(FYLKE_FILL, "visibility", "visible");
+    map.setLayoutProperty(FYLKE_LINE, "visibility", "visible");
+  }, [
+    choroplethActive,
+    choroplethData,
+    choroplethView,
+    subdivisionMetric,
+    mapLevel,
+    onFylkeClick,
+    onFylkeHover,
+    onFylkeLeave,
+  ]);
+
+  // Keep a ref to the latest applyChoropleth so the once-registered style.load
+  // handler (in the init effect) can re-add layers after a basemap/theme switch.
+  const applyChoroplethRef = React.useRef(applyChoropleth);
+  React.useEffect(() => {
+    applyChoroplethRef.current = applyChoropleth;
+  }, [applyChoropleth]);
+
+  // Load the active level's polygons on demand (cached per level), then apply.
+  React.useEffect(() => {
+    if (geoRef.current[mapLevel]) {
+      applyChoroplethRef.current();
+      return;
+    }
+    let cancelled = false;
+    fetch(MAP_LEVELS[mapLevel].file)
+      .then((r) => r.json())
+      .then((g: GeoJSON.FeatureCollection) => {
+        if (cancelled) return;
+        geoRef.current[mapLevel] = g;
+        applyChoroplethRef.current();
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [mapLevel]);
+
+  // Re-apply whenever the active state / data / metric changes.
+  React.useEffect(() => {
+    applyChoropleth();
+  }, [applyChoropleth]);
+
+  // Fly to Norway when the choropleth first activates.
+  React.useEffect(() => {
+    if (choroplethActive && !prevActiveRef.current && mapRef.current) {
+      isAnimatingRef.current = true;
+      mapRef.current.flyTo({
+        center: NORWAY_VIEW.center,
+        zoom: NORWAY_VIEW.zoom,
+        essential: true,
+      });
+    }
+    prevActiveRef.current = choroplethActive;
+  }, [choroplethActive]);
+
   // Initialize map once
   React.useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -303,6 +600,9 @@ export function MapView() {
           0,
         ],
       });
+      // Custom sources/layers are dropped on style reload — re-add the Fylke
+      // choropleth (no-op when inactive or the GeoJSON hasn't loaded yet).
+      applyChoroplethRef.current();
     });
 
     map.addControl(
@@ -338,29 +638,9 @@ export function MapView() {
     mapRef.current.setStyle(getMapStyleUrl());
   }, [mapStyle, resolvedTheme, getMapStyleUrl]);
 
-  // User location marker
-  React.useEffect(() => {
-    if (!mapRef.current || !userLocation) return;
-    if (userMarkerRef.current) {
-      userMarkerRef.current.setLngLat([userLocation.lng, userLocation.lat]);
-      return;
-    }
-
-    const el = document.createElement("div");
-    el.className = "user-marker";
-    el.innerHTML = `
-      <div class="relative">
-        <div class="w-3 h-3 rounded-full bg-foreground border-2 border-background shadow-lg"></div>
-        <div class="absolute inset-0 w-3 h-3 rounded-full bg-foreground/40 animate-ping"></div>
-      </div>
-    `;
-
-    const marker = new maplibregl.Marker({ element: el })
-      .setLngLat([userLocation.lng, userLocation.lat])
-      .addTo(mapRef.current);
-
-    userMarkerRef.current = marker;
-  }, [userLocation]);
+  // (User-location marker removed — no black dot on the map. Selecting a
+  // place just flies/zooms the camera there; userLocation is still used by the
+  // "locate" control to recenter, just without a visible pin.)
 
   // Per-grant pin factory — shared by tier='pin' and the unclustered-point
   // case inside tier='cluster'. Keeps the existing hover/select/popup
@@ -540,26 +820,23 @@ export function MapView() {
     // at every zoom, then return — the discover tiers below stay untouched, so a
     // bug here can never break the discover map.
     if (panelView === "received" || panelView === "awarded") {
-      fundingBubbles.forEach((b) => {
-        const el = createClusterMarkerElement({
-          count: null,
-          label: b.code,
-          variant: "country",
-          displayValue: b.displayValue,
-          magnitude: b.magnitude,
-          tone: panelView === "received" ? "received" : "awarded",
-          onClick: () => {
-            setFundingScope(b.code);
-            setMapCenter({ lat: b.lat, lng: b.lng });
-            setMapZoom(Math.max(mapZoom, COUNTRY_TIER_MAX_ZOOM - 0.5));
-          },
-        });
-        const marker = new maplibregl.Marker({ element: el })
-          .setLngLat([b.lng, b.lat])
-          .addTo(map);
-        markersRef.current.set(`funding:${b.code}`, marker);
-      });
+      // Money-flow country bubbles are DISABLED — the Fylke/Kommune choropleth
+      // (see applyChoropleth) is the funding visualization now. Render no
+      // markers in funding views. (Old bubble code commented out below.)
       return;
+      // fundingBubbles.forEach((b) => {
+      //   const el = createClusterMarkerElement({
+      //     count: null, label: b.code, variant: "country",
+      //     displayValue: b.displayValue, magnitude: b.magnitude,
+      //     tone: panelView === "received" ? "received" : "awarded",
+      //     onClick: () => {
+      //       setFundingScope(b.code);
+      //       setMapCenter({ lat: b.lat, lng: b.lng });
+      //       setMapZoom(Math.max(mapZoom, COUNTRY_TIER_MAX_ZOOM - 0.5));
+      //     },
+      //   });
+      //   new maplibregl.Marker({ element: el }).setLngLat([b.lng, b.lat]).addTo(map);
+      // });
     }
 
     if (tier === "continent") {
@@ -682,6 +959,7 @@ export function MapView() {
     panelView,
     fundingBubbles,
     setFundingScope,
+    choroplethActive,
   ]);
 
   // Fly to selected grant

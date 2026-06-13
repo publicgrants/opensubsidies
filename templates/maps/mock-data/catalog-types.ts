@@ -34,6 +34,10 @@ export type FunderRecord = {
   countryName: string;
   region: string;
   hqCity: string | null;
+  // ISO 3166-2 subdivision (e.g. NO-42 Agder) the funder belongs to, and its
+  // geographic scope. Drives the "awarded by Fylke" view and provider drill-down.
+  subdivision: string | null;
+  geoScope: string | null; // national | regional | local | supranational
   website: string;
   faviconUrl: string;
   prose: string;

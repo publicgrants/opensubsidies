@@ -12,7 +12,10 @@ import {
   ArrowUpFromLine,
   Building2,
   MapPin,
+  Coins,
+  Hash,
 } from "lucide-react";
+import { subdivisionLabel } from "@/mock-data/subdivisions";
 
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -103,23 +106,93 @@ export function FundingCard({ view }: { view: FundingView }) {
   // when data lands, without returning fresh arrays from a selector.
   const fundingAggregates = useGrantsStore((s) => s.fundingAggregates);
   const fundingLeaderboards = useGrantsStore((s) => s.fundingLeaderboards);
+  // Subdivision (Fylke) layer state.
+  const subdivisionMetric = useGrantsStore((s) => s.subdivisionMetric);
+  const setSubdivisionMetric = useGrantsStore((s) => s.setSubdivisionMetric);
+  const subdivisionLevel = useGrantsStore((s) => s.subdivisionLevel);
+  const setSubdivisionLevel = useGrantsStore((s) => s.setSubdivisionLevel);
+  const fundingSubdivisions = useGrantsStore((s) => s.fundingSubdivisions);
+  const fundingProviderId = useGrantsStore((s) => s.fundingProviderId);
+  const setFundingProvider = useGrantsStore((s) => s.setFundingProvider);
 
   const scope = fundingScope ?? "ALL";
+  const isFylkeScope = scope.startsWith("NO-");
+  const isKommuneScope = /^\d{4}$/.test(scope); // a clicked kommune number
+  const isSubdivScope = isFylkeScope || isKommuneScope;
   const aggregate = fundingAggregates[view] ?? null;
   const leaderboard = fundingLeaderboards[`${view}|${scope}`] ?? [];
-  const selectedEntity = selectedId
-    ? (leaderboard.find((e) => e.entityId === selectedId) ?? null)
+  // Hero row: a country row for country scope, or a subdivision row for a Fylke
+  // (NO-xx) / Kommune (4-digit) scope, read from the matching-level NO rollup.
+  const subsForScope =
+    fundingSubdivisions[`${view}|NO|${isKommuneScope ? "kommune" : "fylke"}`] ??
+    [];
+  const subdivRow = isSubdivScope
+    ? (subsForScope.find((d) => d.subdivision === scope) ?? null)
     : null;
-  const scopeRow = aggregate?.countries.find((c) => c.country === scope) ?? null;
+  const scopeRow = isSubdivScope
+    ? subdivRow
+      ? {
+          sumEur: subdivRow.sumEur,
+          awardCount: subdivRow.awardCount,
+          medianEur: subdivRow.medianEur,
+          nativeCurrency: subdivRow.nativeCurrency,
+          sumNative: subdivRow.sumNative,
+        }
+      : null
+    : (aggregate?.countries.find((c) => c.country === scope) ?? null);
   const coverage =
-    scope !== "ALL"
+    scope !== "ALL" && !isSubdivScope
       ? (aggregate?.coverage.find((c) => c.country === scope) ?? null)
       : null;
 
-  const Icon = view === "received" ? ArrowDownToLine : ArrowUpFromLine;
+  // The Fylke choropleth is on screen when focused on Norway or drilled into a
+  // provider — surface the metric (€ / count) toggle then.
+  const showMetricToggle =
+    !!fundingProviderId || scope === "NO" || isSubdivScope;
+  const providerFunder = fundingProviderId
+    ? (funders.find((f) => f.id === fundingProviderId) ?? null)
+    : null;
+  const providerReceivers = fundingProviderId
+    ? (fundingLeaderboards[`received|${fundingProviderId}`] ?? [])
+    : [];
+  const providerSubs = fundingProviderId
+    ? (fundingSubdivisions[`received|${fundingProviderId}|${subdivisionLevel}`] ??
+      [])
+    : [];
+  const providerSumEur = providerSubs.reduce((a, d) => a + d.sumEur, 0);
+  const providerCount = providerSubs.reduce((a, d) => a + d.awardCount, 0);
+
+  // The list to render: a provider's top receivers when drilled in, else the
+  // scope leaderboard. Re-sort by award count when the count metric is active
+  // (the rows are top-50 by amount; this re-orders that set — a documented
+  // approximation, exact top-by-count would need a separate rollup).
+  const activeLeaderboard = fundingProviderId ? providerReceivers : leaderboard;
+  const displayLeaderboard =
+    subdivisionMetric === "count" && showMetricToggle
+      ? [...activeLeaderboard].sort((a, b) => b.awardCount - a.awardCount)
+      : activeLeaderboard;
+  const selectedEntity = selectedId
+    ? (activeLeaderboard.find((e) => e.entityId === selectedId) ?? null)
+    : null;
+
+  const Icon = fundingProviderId
+    ? ArrowDownToLine
+    : view === "received"
+      ? ArrowDownToLine
+      : ArrowUpFromLine;
   const title = view === "received" ? "Money received" : "Money awarded";
   const verb = view === "received" ? "received" : "paid out";
   const entityNoun = view === "received" ? "recipients" : "funders";
+
+  // Provider drill-down overrides the chrome: the card becomes "where THIS
+  // funder's money flows" + its top receivers.
+  const headerTitle = providerFunder ? providerFunder.shortName : title;
+  const heroSumEur = fundingProviderId ? providerSumEur : (scopeRow?.sumEur ?? 0);
+  const heroCount = fundingProviderId
+    ? providerCount
+    : (scopeRow?.awardCount ?? 0);
+  const heroMedian = fundingProviderId ? null : (scopeRow?.medianEur ?? null);
+  const heroVerb = fundingProviderId ? "flows to Norwegian recipients" : verb;
 
   return (
     <div
@@ -137,9 +210,9 @@ export function FundingCard({ view }: { view: FundingView }) {
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-center gap-1.5 min-w-0">
             <SidebarTrigger className="size-7 -ml-1 shrink-0" />
-            <h2 className="font-semibold text-base flex items-center gap-2">
-              <Icon className="size-4" />
-              {title}
+            <h2 className="font-semibold text-base flex items-center gap-2 truncate">
+              <Icon className="size-4 shrink-0" />
+              <span className="truncate">{headerTitle}</span>
             </h2>
           </div>
           <div className="flex items-center gap-1">
@@ -182,14 +255,14 @@ export function FundingCard({ view }: { view: FundingView }) {
               }
             >
               <span className="text-2xl font-semibold tracking-tight tabular-nums">
-                ≈ {fmtEur(scopeRow?.sumEur ?? 0, displayCurrency)}
+                ≈ {fmtEur(heroSumEur, displayCurrency)}
               </span>
-              <span className="text-sm text-muted-foreground">{verb}</span>
+              <span className="text-sm text-muted-foreground">{heroVerb}</span>
             </div>
             <p className="text-xs text-muted-foreground mt-0.5 tabular-nums">
-              across {(scopeRow?.awardCount ?? 0).toLocaleString()} awards
-              {scopeRow?.medianEur != null && (
-                <> · median {fmtEur(scopeRow.medianEur, displayCurrency)}</>
+              across {heroCount.toLocaleString()} awards
+              {heroMedian != null && (
+                <> · median {fmtEur(heroMedian, displayCurrency)}</>
               )}
             </p>
             <p className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground/80">
@@ -238,23 +311,110 @@ export function FundingCard({ view }: { view: FundingView }) {
                 {COMPLETENESS_CHIP[coverage.completeness].label}
               </span>
             )}
-            {scope === "ALL" ? (
+            {fundingProviderId ? (
+              <button
+                type="button"
+                onClick={() => setFundingProvider(null)}
+                className="inline-flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-[11px] font-medium hover:bg-accent"
+                aria-label="Clear provider drill-down"
+              >
+                provider flow
+                <X className="size-3" />
+              </button>
+            ) : scope === "ALL" ? (
               <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                 <MapPin className="size-3" /> All countries
               </span>
             ) : (
               <button
                 type="button"
-                onClick={() => setFundingScope(null)}
+                onClick={() => setFundingScope(isSubdivScope ? "NO" : null)}
                 className="inline-flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-[11px] font-medium hover:bg-accent"
-                aria-label={`Clear ${countryNameOf(funders, scope)} filter`}
+                aria-label={
+                  isSubdivScope
+                    ? `Back to Norway from ${scope}`
+                    : `Clear ${countryNameOf(funders, scope)} filter`
+                }
               >
-                {countryNameOf(funders, scope)}
+                {isFylkeScope
+                  ? subdivisionLabel(scope)
+                  : isKommuneScope
+                    ? `Kommune ${scope}`
+                    : countryNameOf(funders, scope)}
                 <X className="size-3" />
               </button>
             )}
           </div>
         </div>
+
+        {/* Granularity toggle — Fylke ↔ Kommune choropleth on the map */}
+        {showMetricToggle && (
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Level
+            </span>
+            <div className="inline-flex items-center rounded-lg bg-sidebar-accent p-0.5">
+              {(
+                [
+                  ["fylke", "Fylke"],
+                  ["kommune", "Kommune"],
+                ] as const
+              ).map(([lvl, label]) => (
+                <button
+                  key={lvl}
+                  type="button"
+                  onClick={() => setSubdivisionLevel(lvl)}
+                  aria-pressed={subdivisionLevel === lvl}
+                  className={cn(
+                    "rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors",
+                    subdivisionLevel === lvl
+                      ? "bg-background shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* € / count metric toggle — drives the choropleth shading + ranks */}
+        {showMetricToggle && (
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Shade by
+            </span>
+            <div className="inline-flex items-center rounded-lg bg-sidebar-accent p-0.5">
+              <button
+                type="button"
+                onClick={() => setSubdivisionMetric("sum")}
+                aria-pressed={subdivisionMetric === "sum"}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors",
+                  subdivisionMetric === "sum"
+                    ? "bg-background shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Coins className="size-3" /> Amount
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubdivisionMetric("count")}
+                aria-pressed={subdivisionMetric === "count"}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors",
+                  subdivisionMetric === "count"
+                    ? "bg-background shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Hash className="size-3" /> Awards
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Collapsible leaderboard — prominent collapse control */}
@@ -269,7 +429,9 @@ export function FundingCard({ view }: { view: FundingView }) {
           ) : (
             <ChevronRight className="size-4" />
           )}
-          <span className="capitalize">Top {entityNoun}</span>
+          <span className="capitalize">
+            {fundingProviderId ? "Top receivers" : `Top ${entityNoun}`}
+          </span>
           <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
             {listExpanded ? "Hide" : "Show"}
           </span>
@@ -281,25 +443,41 @@ export function FundingCard({ view }: { view: FundingView }) {
               {selectedEntity ? (
                 <EntityDetail
                   entity={selectedEntity}
-                  view={view}
+                  view={fundingProviderId ? "received" : view}
                   currency={displayCurrency}
                   onBack={() => selectFundingEntity(null)}
                 />
-              ) : leaderboard.length === 0 ? (
+              ) : displayLeaderboard.length === 0 ? (
                 <div className="py-10 text-center text-xs text-muted-foreground">
                   {aggregate == null
                     ? "Loading…"
-                    : `No ${entityNoun} for this selection yet.`}
+                    : fundingProviderId
+                      ? "No mapped receivers for this funder yet."
+                      : `No ${entityNoun} for this selection yet.`}
                 </div>
               ) : (
-                leaderboard.map((e) => (
-                  <LeaderboardRow
-                    key={`${e.entityType}:${e.entityId}`}
-                    entity={e}
-                    currency={displayCurrency}
-                    onClick={() => selectFundingEntity(e.entityId)}
-                  />
-                ))
+                displayLeaderboard.map((e) => {
+                  // In the awarded view, a funder row drills into that provider's
+                  // money-flow (national or regional). Otherwise show entity detail.
+                  const drillProvider =
+                    !fundingProviderId &&
+                    view === "awarded" &&
+                    e.entityType === "funder";
+                  return (
+                    <LeaderboardRow
+                      key={`${e.entityType}:${e.entityId}`}
+                      entity={e}
+                      currency={displayCurrency}
+                      metric={subdivisionMetric}
+                      showMetric={showMetricToggle}
+                      onClick={() =>
+                        drillProvider
+                          ? setFundingProvider(e.entityId)
+                          : selectFundingEntity(e.entityId)
+                      }
+                    />
+                  );
+                })
               )}
             </div>
           </div>
@@ -312,13 +490,19 @@ export function FundingCard({ view }: { view: FundingView }) {
 function LeaderboardRow({
   entity,
   currency,
+  metric = "sum",
+  showMetric = false,
   onClick,
 }: {
   entity: FundingEntity;
   currency: DisplayCurrency;
+  metric?: "sum" | "count";
+  showMetric?: boolean;
   onClick: () => void;
 }) {
   const native = fmtNative(entity.sumNative, entity.nativeCurrency);
+  // When ranking by award count, lead with the count and demote the amount.
+  const countLead = showMetric && metric === "count";
   return (
     <button
       type="button"
@@ -334,15 +518,19 @@ function LeaderboardRow({
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium">{entity.entityName}</span>
         <span className="block text-[11px] text-muted-foreground tabular-nums">
-          {entity.awardCount.toLocaleString()} awards
+          {countLead
+            ? `≈ ${fmtEur(entity.sumEur, currency)}`
+            : `${entity.awardCount.toLocaleString()} awards`}
           {entity.entityCountry ? ` · ${entity.entityCountry}` : ""}
         </span>
       </span>
       <span className="shrink-0 text-right">
         <span className="block text-sm font-semibold tabular-nums">
-          ≈ {fmtEur(entity.sumEur, currency)}
+          {countLead
+            ? `${entity.awardCount.toLocaleString()} awards`
+            : `≈ ${fmtEur(entity.sumEur, currency)}`}
         </span>
-        {native && (
+        {!countLead && native && (
           <span className="block text-[10px] text-muted-foreground tabular-nums">{native}</span>
         )}
       </span>

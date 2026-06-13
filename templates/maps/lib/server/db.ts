@@ -17,6 +17,8 @@ export type FunderRow = {
   country_name: string;
   region: string;
   hq_city: string | null;
+  subdivision: string | null;
+  geo_scope: string | null;
   website: string | null;
   favicon_url: string | null;
 };
@@ -47,7 +49,7 @@ export type GrantRow = {
 export type GrantDetailRow = GrantRow & { prose: string | null };
 
 const FUNDER_COLS =
-  "id,name,short_name,type,country,country_name,region,hq_city,website,favicon_url";
+  "id,name,short_name,type,country,country_name,region,hq_city,subdivision,geo_scope,website,favicon_url";
 const GRANT_LEAN_COLS =
   "id,funder_id,name,url,application_url,description,closes_at,opens_at,application_mode,currency,min_amount,max_amount,funding_rate_pct,total_budget,instrument_type,scheme_code,program,documents,source_updated_at,state";
 
@@ -505,6 +507,18 @@ export type FundingCoverageRow = {
   as_of: string | null;
 };
 
+export type FundingSubdivisionRow = {
+  view: string;
+  scope: string;
+  level: string;
+  subdivision: string;
+  sum_eur: number;
+  award_count: number;
+  median_eur: number | null;
+  native_currency: string | null;
+  sum_native: number | null;
+};
+
 // Per-country (+ the 'ALL' global hero row) totals for one view, plus coverage
 // — drives the funding map bubbles and the hero. Single round-trip.
 export async function queryFundingAggregate(view: FundingView): Promise<{
@@ -527,7 +541,9 @@ export async function queryFundingAggregate(view: FundingView): Promise<{
   return { countries: countries.results, coverage: coverage.results };
 }
 
-// Top-N recipients (received) / funders (awarded) for a scope ('ALL' or country).
+// Top-N recipients (received) / funders (awarded) for a scope. `scope` is 'ALL',
+// a country code, a subdivision (e.g. NO-42 → recipients in that Fylke), or a
+// funderId (e.g. NO/InnovasjonNorge → that funder's top receivers).
 export async function queryFundingLeaderboard(
   view: FundingView,
   scope: string,
@@ -543,5 +559,26 @@ export async function queryFundingLeaderboard(
     )
     .bind(view, scope, n)
     .all<FundingEntityRow>();
+  return res.results;
+}
+
+// Subdivision rollups for one (view, scope) at a granularity level. `scope` is a
+// country code (the aggregate Fylke choropleth) or a funderId (the per-provider
+// "where this funder's money flows" choropleth). Ordered by sum desc so the
+// caller can colour-scale and rank directly.
+export async function queryFundingSubdivisions(
+  view: FundingView,
+  scope: string,
+  level = "fylke",
+): Promise<FundingSubdivisionRow[]> {
+  const db = getDb();
+  const res = await db
+    .prepare(
+      `SELECT view,scope,level,subdivision,sum_eur,award_count,median_eur,native_currency,sum_native
+       FROM funding_subdivision WHERE view = ? AND scope = ? AND level = ?
+       ORDER BY sum_eur DESC`,
+    )
+    .bind(view, scope, level)
+    .all<FundingSubdivisionRow>();
   return res.results;
 }

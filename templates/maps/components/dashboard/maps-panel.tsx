@@ -900,10 +900,10 @@ function GrantDetail({
   onToggleSaved: () => void;
 }) {
   const [isOpening, setIsOpening] = React.useState(false);
-  // Bridge into the funding view, scoped to this grant's funder.
+  // Bridge into the funding view, drilling into this grant's funder so the map
+  // shows where its money flows (by Fylke) + its top receivers.
   const setPanelView = useGrantsStore((s) => s.setPanelView);
-  const setFundingScope = useGrantsStore((s) => s.setFundingScope);
-  const selectFundingEntity = useGrantsStore((s) => s.selectFundingEntity);
+  const setFundingProvider = useGrantsStore((s) => s.setFundingProvider);
   // Prose is not in the lean catalog; fetch it on demand for the detail card.
   const [prose, setProse] = React.useState(grant.prose);
   React.useEffect(() => {
@@ -1025,20 +1025,18 @@ function GrantDetail({
         <button
           type="button"
           onClick={() => {
-            const cc = grant.funderId.split("/")[0];
-            setPanelView("awarded");
-            setFundingScope(cc);
-            selectFundingEntity(grant.funderId);
+            setPanelView("received");
+            setFundingProvider(grant.funderId);
           }}
           className="mb-4 flex w-full items-center justify-between gap-2 rounded-lg border bg-background/60 px-3 py-2 text-xs transition-colors hover:bg-accent"
         >
           <span className="inline-flex items-center gap-1.5 text-muted-foreground">
             <Banknote className="size-3.5" />
-            See what{" "}
+            See where{" "}
             <span className="font-medium text-foreground">
               {funderShort || funderName}
-            </span>{" "}
-            has paid out
+            </span>
+            ’s money flows
           </span>
           <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
         </button>

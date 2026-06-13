@@ -15,6 +15,8 @@ CREATE TABLE funders (
   country_name TEXT NOT NULL,
   region       TEXT NOT NULL,          -- continent / "Supranational"
   hq_city      TEXT,
+  subdivision  TEXT,                   -- ISO 3166-2 (e.g. NO-42 Agder), if regional/local
+  geo_scope    TEXT,                   -- national | regional | local | supranational
   website      TEXT,
   favicon_url  TEXT,
   lat          REAL NOT NULL,          -- resolved at build from hq_city/country
@@ -87,7 +89,7 @@ CREATE TABLE funding_country (
 DROP TABLE IF EXISTS funding_entity;
 CREATE TABLE funding_entity (
   view            TEXT NOT NULL,    -- received | awarded
-  scope           TEXT NOT NULL,    -- 'ALL' or a country code
+  scope           TEXT NOT NULL,    -- 'ALL', a country code, a subdivision (NO-42), or a funderId
   entity_type     TEXT NOT NULL,    -- recipient | funder
   entity_id       TEXT NOT NULL,
   entity_name     TEXT NOT NULL,
@@ -107,3 +109,24 @@ CREATE TABLE funding_coverage (
   completeness TEXT NOT NULL,       -- full | partial | threshold_capped | sample
   as_of        TEXT
 );
+
+-- Sub-national rollups: money by administrative subdivision (Norway POC: Fylke).
+-- `scope` is a country code (the aggregate "which Fylke gets/sends most" view) OR
+-- a funderId (the per-provider drill-down — where one funder's money flows).
+-- `level` is fylke | kommune | city so the Fylke↔Kommune↔City toggle is additive.
+-- `subdivision` is an ISO 3166-2 code (NO-42), a kommune number, a poststed, or
+-- the sentinel 'NATIONAL' (awarded money from funders with no single origin Fylke).
+DROP TABLE IF EXISTS funding_subdivision;
+CREATE TABLE funding_subdivision (
+  view            TEXT NOT NULL,    -- received | awarded
+  scope           TEXT NOT NULL,    -- country code, or a funderId
+  level           TEXT NOT NULL,    -- fylke | kommune | city
+  subdivision     TEXT NOT NULL,    -- ISO 3166-2 / kommune nr / poststed / 'NATIONAL'
+  sum_eur         REAL NOT NULL,
+  award_count     INTEGER NOT NULL,
+  median_eur      REAL,
+  native_currency TEXT,
+  sum_native      REAL,
+  PRIMARY KEY (view, scope, level, subdivision)
+);
+CREATE INDEX idx_funding_subdivision_lookup ON funding_subdivision(view, scope, level);

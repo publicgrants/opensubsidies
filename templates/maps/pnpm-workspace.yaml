@@ -1,0 +1,22 @@
+allowBuilds:
+  esbuild: set this to true or false
+  msw: set this to true or false
+  sharp: set this to true or false
+  unrs-resolver: set this to true or false
+  workerd: set this to true or false
+
+# pnpm-11 settings (the old package.json `pnpm.onlyBuiltDependencies` field is
+# no longer read). Permit the native post-install builds we rely on locally:
+#   esbuild / unrs-resolver — used by tsx + next/eslint
+#   workerd               — Cloudflare runtime for local D1 (wrangler/dev)
+#   sharp                 — image optimisation
+# msw is test-only and left unbuilt.
+onlyBuiltDependencies:
+  - esbuild
+  - unrs-resolver
+  - workerd
+  - sharp
+
+# Don't re-run an implicit install before `pnpm <script>`; it treats the
+# "ignored build scripts" notice as a hard error otherwise.
+verifyDepsBeforeRun: false

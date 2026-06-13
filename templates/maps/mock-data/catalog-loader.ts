@@ -26,6 +26,8 @@ export type Funder = {
   countryName: string;
   region: string;
   hq: string | null;
+  subdivision: string | null; // ISO 3166-2 (e.g. NO-42), if regional/local
+  geoScope: string | null; // national | regional | local | supranational
   website: string;
   faviconUrl: string;
   lat: number;
@@ -95,6 +97,8 @@ type AggFunderRow = {
   country_name: string;
   region: string;
   hq_city: string | null;
+  subdivision: string | null;
+  geo_scope: string | null;
   website: string | null;
   favicon_url: string | null;
   lat: number;
@@ -194,6 +198,8 @@ function mapFunder(r: AggFunderRow): Funder {
     countryName: r.country_name,
     region: r.region,
     hq: r.hq_city,
+    subdivision: r.subdivision ?? null,
+    geoScope: r.geo_scope ?? null,
     website: r.website ?? "",
     faviconUrl: r.favicon_url ?? "",
     lat: r.lat,
@@ -322,6 +328,20 @@ export type FundingCoverage = {
   asOf: string | null;
 };
 
+export type SubdivisionLevel = "fylke" | "kommune" | "city";
+
+export type FundingSubdivision = {
+  view: FundingView;
+  scope: string; // country code or funderId
+  level: SubdivisionLevel;
+  subdivision: string; // ISO 3166-2 (NO-42), kommune nr, poststed, or "NATIONAL"
+  sumEur: number;
+  awardCount: number;
+  medianEur: number | null;
+  nativeCurrency: string | null;
+  sumNative: number | null;
+};
+
 export type FundingAggregate = {
   countries: FundingCountry[];
   coverage: FundingCoverage[];
@@ -354,6 +374,17 @@ type FundingCoverageRow = {
   country: string;
   completeness: string;
   as_of: string | null;
+};
+type FundingSubdivisionRow = {
+  view: string;
+  scope: string;
+  level: string;
+  subdivision: string;
+  sum_eur: number;
+  award_count: number;
+  median_eur: number | null;
+  native_currency: string | null;
+  sum_native: number | null;
 };
 
 function mapFundingCountry(r: FundingCountryRow): FundingCountry {
@@ -413,4 +444,36 @@ export async function fetchFundingLeaderboard(
     throw new Error(`Failed to load funding leaderboard (${res.status})`);
   const data = (await res.json()) as { entities: FundingEntityRow[] };
   return data.entities.map(mapFundingEntity);
+}
+
+function mapFundingSubdivision(r: FundingSubdivisionRow): FundingSubdivision {
+  return {
+    view: r.view === "awarded" ? "awarded" : "received",
+    scope: r.scope,
+    level: (["fylke", "kommune", "city"].includes(r.level)
+      ? r.level
+      : "fylke") as SubdivisionLevel,
+    subdivision: r.subdivision,
+    sumEur: r.sum_eur,
+    awardCount: r.award_count,
+    medianEur: r.median_eur,
+    nativeCurrency: r.native_currency,
+    sumNative: r.sum_native,
+  };
+}
+
+// Subdivision rollups for a (view, scope) at a granularity level. `scope` is a
+// country code (aggregate Fylke choropleth) or a funderId (per-provider drill-down).
+export async function fetchFundingSubdivisions(
+  view: FundingView,
+  scope: string,
+  level: SubdivisionLevel = "fylke",
+): Promise<FundingSubdivision[]> {
+  const res = await fetch(
+    `/api/funding?view=${view}&scope=${encodeURIComponent(scope)}&level=${level}`,
+  );
+  if (!res.ok)
+    throw new Error(`Failed to load funding subdivisions (${res.status})`);
+  const data = (await res.json()) as { subdivisions: FundingSubdivisionRow[] };
+  return data.subdivisions.map(mapFundingSubdivision);
 }

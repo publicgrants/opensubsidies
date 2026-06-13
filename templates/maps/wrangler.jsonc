@@ -24,6 +24,10 @@
     }
   ],
   // Workers AI for query/document embeddings (@cf/baai/bge-m3, 1024-dim).
+  // NOTE: AI + Vectorize are remote-only bindings — `next dev` needs a Cloudflare
+  // login (`wrangler login` / CLOUDFLARE_API_TOKEN) to proxy them, or comment
+  // these two lines out for fully-offline local dev (the Fylke money-flow map
+  // uses D1 only; lib/server/db.ts guards missing AI/VECTORIZE → FTS fallback).
   "ai": { "binding": "AI" },
   // Vectorize index for semantic search (cosine, 1024-dim).
   "vectorize": [{ "binding": "VECTORIZE", "index_name": "grants-search" }]

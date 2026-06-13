@@ -13,6 +13,7 @@ import {
   fetchGrantsPage,
   fetchFundingAggregate,
   fetchFundingLeaderboard,
+  fetchFundingSubdivisions,
 } from "@/mock-data/locations";
 import type {
   Grant,
@@ -25,8 +26,16 @@ import type {
   FundingView,
   FundingAggregate,
   FundingEntity,
+  FundingSubdivision,
+  SubdivisionLevel,
 } from "@/mock-data/locations";
 import type { DisplayCurrency } from "@/lib/fx-rates";
+
+// Countries we render a within-country subdivision (Fylke) choropleth for. POC:
+// Norway only (the only country with a recipient-location enrichment so far).
+export const SUBDIVISION_COUNTRIES = new Set(["NO"]);
+// Which metric the Fylke choropleth + rankings express.
+export type SubdivisionMetric = "sum" | "count";
 
 type ViewMode = "map" | "list" | "split";
 type MapStyle = "default" | "streets" | "outdoors" | "satellite";
@@ -109,11 +118,19 @@ interface GrantsState {
   // Funding layer (lazy-loaded; populated on first switch to a funding view)
   panelView: PanelView;
   displayCurrency: DisplayCurrency;
-  fundingScope: string | null; // selected country code; null = global ("ALL")
+  fundingScope: string | null; // country code, OR a subdivision code (NO-42); null = global ("ALL")
   selectedFundingEntityId: string | null;
   fundingAggregates: Partial<Record<FundingView, FundingAggregate>>;
   fundingLeaderboards: Record<string, FundingEntity[]>; // key `${view}|${scope}`
   fundingLoading: boolean;
+
+  // Subdivision (Fylke) layer — the within-country money-flow choropleth.
+  subdivisionMetric: SubdivisionMetric; // colour/rank by total € or award count
+  subdivisionLevel: SubdivisionLevel; // fylke | kommune | city (POC: fylke)
+  fundingSubdivisions: Record<string, FundingSubdivision[]>; // key `${view}|${scope}|${level}`
+  // Provider drill-down: the funder whose money-flow (received-by-Fylke) is shown.
+  // Set on selecting a provider; drives the per-provider choropleth + top receivers.
+  fundingProviderId: string | null;
 
   // ── Actions ──
   initialize: () => Promise<void>;
@@ -145,6 +162,14 @@ interface GrantsState {
   selectFundingEntity: (id: string | null) => void;
   loadFundingAggregate: (view: FundingView) => Promise<void>;
   loadFundingLeaderboard: (view: FundingView, scope: string) => Promise<void>;
+  loadFundingSubdivisions: (
+    view: FundingView,
+    scope: string,
+    level: SubdivisionLevel,
+  ) => Promise<void>;
+  setSubdivisionMetric: (m: SubdivisionMetric) => void;
+  setSubdivisionLevel: (l: SubdivisionLevel) => void;
+  setFundingProvider: (funderId: string | null) => void;
 
   // ── Selectors ──
   getFilteredGrants: () => Grant[];
@@ -201,6 +226,11 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
   fundingAggregates: {},
   fundingLeaderboards: {},
   fundingLoading: false,
+
+  subdivisionMetric: "sum",
+  subdivisionLevel: "fylke",
+  fundingSubdivisions: {},
+  fundingProviderId: null,
 
   initialize: async () => {
     if (get().loaded || get().loading) return;
@@ -369,23 +399,59 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
 
   // ── Funding actions (lazy-load; never block initialize) ──
   setPanelView: (v) => {
-    set({ panelView: v, selectedFundingEntityId: null });
     const fv = fundingViewOf(v);
+    // Money-flow is now the default: entering a funding view auto-focuses the
+    // POC country (Norway) so the Fylke choropleth shows immediately — no click,
+    // no bubbles. Preserves an existing scope if the user already drilled in.
+    const scope = fv ? (get().fundingScope ?? "NO") : get().fundingScope;
+    set({
+      panelView: v,
+      selectedFundingEntityId: null,
+      fundingProviderId: null,
+      fundingScope: scope,
+    });
     if (fv) {
       void get().loadFundingAggregate(fv);
-      void get().loadFundingLeaderboard(fv, get().fundingScope ?? "ALL");
+      void get().loadFundingLeaderboard(fv, scope ?? "ALL");
+      void get().loadFundingSubdivisions(fv, "NO", get().subdivisionLevel);
     }
   },
 
   setDisplayCurrency: (c) => set({ displayCurrency: c }),
 
   setFundingScope: (country) => {
-    set({ fundingScope: country, selectedFundingEntityId: null });
+    // Changing scope leaves any provider drill-down (scope wins).
+    set({ fundingScope: country, selectedFundingEntityId: null, fundingProviderId: null });
     const fv = fundingViewOf(get().panelView);
-    if (fv) void get().loadFundingLeaderboard(fv, country ?? "ALL");
+    if (!fv) return;
+    void get().loadFundingLeaderboard(fv, country ?? "ALL");
+    // Scoping to a subdivision country (NO) → ensure its choropleth data is loaded.
+    if (country && SUBDIVISION_COUNTRIES.has(country)) {
+      void get().loadFundingSubdivisions(fv, country, get().subdivisionLevel);
+    }
   },
 
   selectFundingEntity: (id) => set({ selectedFundingEntityId: id }),
+
+  // Drill into one provider: show where ITS money flows (received-by-Fylke) +
+  // its top receivers. Works for national funders (Innovasjon Norge) and
+  // regional funders alike — provider flow is always a received-side question.
+  setFundingProvider: (funderId) => {
+    set({ fundingProviderId: funderId, selectedFundingEntityId: null });
+    if (!funderId) return;
+    void get().loadFundingSubdivisions("received", funderId, get().subdivisionLevel);
+    void get().loadFundingLeaderboard("received", funderId);
+  },
+
+  setSubdivisionMetric: (m) => set({ subdivisionMetric: m }),
+
+  setSubdivisionLevel: (l) => {
+    set({ subdivisionLevel: l });
+    const fv = fundingViewOf(get().panelView);
+    const provider = get().fundingProviderId;
+    if (provider) void get().loadFundingSubdivisions("received", provider, l);
+    if (fv) void get().loadFundingSubdivisions(fv, "NO", l);
+  },
 
   loadFundingAggregate: async (view) => {
     if (get().fundingAggregates[view]) return; // cached
@@ -411,6 +477,19 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
       }));
     } catch {
       /* leaderboard stays empty on error */
+    }
+  },
+
+  loadFundingSubdivisions: async (view, scope, level) => {
+    const key = `${view}|${scope}|${level}`;
+    if (get().fundingSubdivisions[key]) return; // cached
+    try {
+      const subdivisions = await fetchFundingSubdivisions(view, scope, level);
+      set((s) => ({
+        fundingSubdivisions: { ...s.fundingSubdivisions, [key]: subdivisions },
+      }));
+    } catch {
+      /* subdivision layer stays empty on error */
     }
   },
 

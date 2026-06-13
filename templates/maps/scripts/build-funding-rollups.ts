@@ -6,9 +6,12 @@
 // The raw catalog holds ~2.4M award records — far too many to ship to the
 // browser or hold in memory. We stream line-by-line and keep only compact
 // aggregates:
-//   funding_country  — per (view, country) totals for map bubbles + the hero
-//   funding_entity   — top-N recipients/funders per (view, scope) for leaderboards
-//   funding_coverage — per-country data-completeness for the honesty chips
+//   funding_country     — per (view, country) totals for map bubbles + the hero
+//   funding_entity      — top-N recipients/funders per (view, scope) for leaderboards
+//   funding_coverage    — per-country data-completeness for the honesty chips
+//   funding_subdivision — per (view, scope, level, subdivision) totals for the
+//                         within-country Fylke choropleth + per-provider drill-down
+//                         (scope = country code for the aggregate, or funderId)
 //
 // Correctness rules (see the plan):
 //   • recipient country = recipient_country ?? funder country (the {CC} prefix)
@@ -29,6 +32,11 @@ import readline from "node:readline";
 import matter from "gray-matter";
 
 import { toEur, FX_AS_OF } from "../lib/fx-rates";
+import {
+  loadOrgGeoMap,
+  unpackGeo,
+  type OrgGeoMap,
+} from "./build-geo-enrichment";
 
 const ROOT = path.resolve(
   process.env.GRANTS_SOURCES_DIR ??
@@ -51,7 +59,20 @@ const EXCLUDED_COUNTRIES = new Set(["ES"]);
 const TOP_N = 50;
 const ALL = "ALL";
 
+// Countries for which we compute sub-national (subdivision) rollups. Norway is
+// the POC: we have an org-nr → Fylke map (build-geo-enrichment) only for NO, and
+// gating the per-funder + per-subdivision accumulation to NO keeps memory bounded
+// (a global per-(funder,recipient) accumulation would be millions of entries).
+// Extend this set as other countries gain a recipient-location enrichment.
+const SUBDIVISION_COUNTRIES = new Set(["NO"]);
+// Origin bucket for funders with no single subdivision (national/supranational).
+const NATIONAL = "NATIONAL";
+
 type View = "received" | "awarded";
+
+// Granularity level of a subdivision rollup row. POC emits "fylke"; the
+// Kommune/City toggle adds "kommune"/"city" rows with no schema change.
+type SubdivLevel = "fylke" | "kommune" | "city";
 
 // ── grants-sources award record (only the fields we use) ────────────────────
 type Award = {
@@ -201,8 +222,76 @@ type EntityAcc = {
 
 const countryAgg = new Map<string, CountryAcc>(); // `${view}|${country}` (+ `${view}|ALL`)
 const entityAgg = new Map<string, EntityAcc>(); // `${view}|${scope}|${type}|${id}`
+// Subdivision rollups: `${view}|${scope}|${level}|${subdivision}`. `scope` is a
+// country code (aggregate choropleth) OR a funderId (per-provider choropleth).
+const subdivAgg = new Map<string, CountryAcc>();
 const countryFetched = new Map<string, string>(); // country -> max fetched_at
 const funderCompleteness = new Map<string, string>(); // funderId -> completeness
+
+// org-nr → location (Fylke/Kommune/City), loaded once for SUBDIVISION_COUNTRIES.
+let orgGeo: OrgGeoMap = new Map();
+
+// funderId → { subdivision (ISO 3166-2 | null), scope } read lazily from the
+// funder's sibling source.md frontmatter. Drives the "awarded" (which Fylke
+// sends) view; cached so each funder's source.md is parsed at most once.
+const funderGeoCache = new Map<
+  string,
+  { subdivision: string | null; scope: string | null }
+>();
+
+function readFunderGeo(awardsJsonlPath: string): {
+  subdivision: string | null;
+  scope: string | null;
+} {
+  const mdPath = path.join(path.dirname(awardsJsonlPath), "source.md");
+  try {
+    const data = matter(fs.readFileSync(mdPath, "utf8")).data as Record<
+      string,
+      unknown
+    >;
+    const geo = (data.geography ?? {}) as Record<string, unknown>;
+    return {
+      subdivision:
+        typeof geo.subdivision === "string" && geo.subdivision
+          ? geo.subdivision
+          : null,
+      scope: typeof geo.scope === "string" ? geo.scope : null,
+    };
+  } catch {
+    return { subdivision: null, scope: null };
+  }
+}
+
+function addSubdiv(
+  view: View,
+  scope: string,
+  level: SubdivLevel,
+  subdivision: string,
+  eur: number,
+  native: number,
+  currency: string,
+): void {
+  const key = `${view}|${scope}|${level}|${subdivision}`;
+  let acc = subdivAgg.get(key);
+  if (!acc) {
+    acc = {
+      sumEur: 0,
+      count: 0,
+      hist: new Hist(),
+      currencies: new Set(),
+      sumNativeByCurrency: new Map(),
+    };
+    subdivAgg.set(key, acc);
+  }
+  acc.sumEur += eur;
+  acc.count += 1;
+  acc.hist.add(eur);
+  acc.currencies.add(currency);
+  acc.sumNativeByCurrency.set(
+    currency,
+    (acc.sumNativeByCurrency.get(currency) ?? 0) + native,
+  );
+}
 
 function addCountry(
   view: View,
@@ -351,6 +440,23 @@ async function processFile(file: string): Promise<void> {
     addEntity("awarded", funderCC, "funder", funder, funderName, funderCC, currency, eur, amount, true);
     if (fetched) trackFetched(funderCC, fetched);
 
+    // "which Fylke sends the most": place awarded money on the funder's own
+    // subdivision (regional/local funders) or the NATIONAL bucket (national /
+    // supranational funders have no single origin Fylke — never smear them).
+    const doSubdivision = SUBDIVISION_COUNTRIES.has(funderCC);
+    if (doSubdivision) {
+      let fg = funderGeoCache.get(funder);
+      if (!fg) {
+        fg = readFunderGeo(file);
+        funderGeoCache.set(funder, fg);
+      }
+      const origin =
+        (fg.scope === "regional" || fg.scope === "local") && fg.subdivision
+          ? fg.subdivision
+          : NATIONAL;
+      addSubdiv("awarded", funderCC, "fylke", origin, eur, amount, currency);
+    }
+
     // ── received: money landing on a recipient, placed at recipient country ──
     const recCountry =
       typeof a.recipient_country === "string" && a.recipient_country
@@ -368,6 +474,40 @@ async function processFile(file: string): Promise<void> {
     if (recId && recName) {
       addEntity("received", ALL, "recipient", recId, recName, recCountry, currency, eur, amount, false);
       addEntity("received", recCountry, "recipient", recId, recName, recCountry, currency, eur, amount, false);
+    }
+
+    // "where money flows TO, by Fylke": resolve the recipient's own registered
+    // location (independent of the funder) from the brreg enrichment. Drives
+    // both the country choropleth and the per-provider drill-down (a funder —
+    // national OR regional — shading the map by where its money lands + its
+    // top-10 receivers). Gated to SUBDIVISION_COUNTRIES to bound memory.
+    if (doSubdivision && recId) {
+      const geo = unpackGeo(orgGeo.get(recId));
+      if (geo?.fylke) {
+        // Emit all three granularity levels so the Fylke↔Kommune↔City toggle is
+        // a pure read switch. Codes: fylke = ISO 3166-2 (NO-42); kommune =
+        // 4-digit kommune number; city = poststed name.
+        const levels: [SubdivLevel, string | null][] = [
+          ["fylke", geo.fylke],
+          ["kommune", geo.kommunenr],
+          ["city", geo.poststed],
+        ];
+        for (const [level, code] of levels) {
+          if (!code) continue;
+          // country-scoped choropleth (which area receives the most)
+          addSubdiv("received", recCountry, level, code, eur, amount, currency);
+          // per-provider choropleth (where THIS funder's money flows)
+          addSubdiv("received", funder, level, code, eur, amount, currency);
+        }
+        if (recName) {
+          // recipient leaderboards within the clicked Fylke / Kommune, plus this
+          // funder's top receivers (the provider drill-down popup table).
+          addEntity("received", geo.fylke, "recipient", recId, recName, recCountry, currency, eur, amount, false);
+          if (geo.kommunenr)
+            addEntity("received", geo.kommunenr, "recipient", recId, recName, recCountry, currency, eur, amount, false);
+          addEntity("received", funder, "recipient", recId, recName, recCountry, currency, eur, amount, false);
+        }
+      }
     }
   }
 }
@@ -393,6 +533,17 @@ async function main(): Promise<void> {
         `Set GRANTS_SOURCES_DIR or clone the catalog as a sibling.`,
     );
     process.exit(1);
+  }
+
+  // Recipient-location enrichment (org-nr → Fylke/Kommune/City) for the
+  // subdivision rollups. Loaded once; skipped entirely if no subdivision
+  // countries are configured.
+  if (SUBDIVISION_COUNTRIES.size > 0) {
+    console.log(
+      `[build-funding] loading recipient geo for [${[...SUBDIVISION_COUNTRIES].join(", ")}] …`,
+    );
+    orgGeo = await loadOrgGeoMap();
+    console.log(`[build-funding] geo map: ${orgGeo.size.toLocaleString()} orgs`);
   }
 
   const files = walk(SOURCES_DIR, "awards.jsonl");
@@ -471,6 +622,37 @@ async function main(): Promise<void> {
     });
   }
 
+  // ── funding_subdivision rows: per (view, scope, level, subdivision) ──
+  type SubdivRow = {
+    view: string;
+    scope: string;
+    level: string;
+    subdivision: string;
+    sumEur: number;
+    count: number;
+    medianEur: number | null;
+    nativeCurrency: string | null;
+    sumNative: number | null;
+  };
+  const subdivRows: SubdivRow[] = [];
+  for (const [key, acc] of subdivAgg) {
+    // scope may itself contain '|' is impossible (country codes / funderIds use
+    // '/'), so a 4-way split is safe.
+    const [view, scope, level, subdivision] = key.split("|");
+    const single = acc.currencies.size === 1 ? [...acc.currencies][0] : null;
+    subdivRows.push({
+      view,
+      scope,
+      level,
+      subdivision,
+      sumEur: Math.round(acc.sumEur),
+      count: acc.count,
+      medianEur: acc.hist.median(),
+      nativeCurrency: single,
+      sumNative: single ? Math.round(acc.sumNativeByCurrency.get(single)!) : null,
+    });
+  }
+
   // ── funding_coverage rows: worst completeness per country ──
   const countryCompleteness = new Map<string, string>();
   for (const [funderId, completeness] of funderCompleteness) {
@@ -526,9 +708,25 @@ async function main(): Promise<void> {
   completeness TEXT NOT NULL,
   as_of TEXT
 );`);
+  out.push(`CREATE TABLE IF NOT EXISTS funding_subdivision (
+  view TEXT NOT NULL,
+  scope TEXT NOT NULL,            -- country code (aggregate) OR funderId (per-provider)
+  level TEXT NOT NULL,            -- fylke | kommune | city
+  subdivision TEXT NOT NULL,      -- ISO 3166-2 (e.g. NO-42), kommune nr, poststed, or NATIONAL
+  sum_eur REAL NOT NULL,
+  award_count INTEGER NOT NULL,
+  median_eur REAL,
+  native_currency TEXT,
+  sum_native REAL,
+  PRIMARY KEY (view, scope, level, subdivision)
+);`);
+  out.push(
+    "CREATE INDEX IF NOT EXISTS idx_funding_subdivision_lookup ON funding_subdivision(view, scope, level);",
+  );
   out.push("DELETE FROM funding_entity;");
   out.push("DELETE FROM funding_country;");
   out.push("DELETE FROM funding_coverage;");
+  out.push("DELETE FROM funding_subdivision;");
 
   emitInserts(
     out,
@@ -577,6 +775,25 @@ async function main(): Promise<void> {
     (r) => [sqlStr(r.country), sqlStr(r.completeness), sqlStr(r.asOf)].join(","),
   );
 
+  emitInserts(
+    out,
+    "funding_subdivision",
+    "(view,scope,level,subdivision,sum_eur,award_count,median_eur,native_currency,sum_native)",
+    subdivRows,
+    (r) =>
+      [
+        sqlStr(r.view),
+        sqlStr(r.scope),
+        sqlStr(r.level),
+        sqlStr(r.subdivision),
+        sqlNum(r.sumEur),
+        sqlNum(r.count),
+        sqlNum(r.medianEur === null ? null : Math.round(r.medianEur)),
+        sqlStr(r.nativeCurrency),
+        sqlNum(r.sumNative),
+      ].join(","),
+  );
+
   fs.mkdirSync(path.dirname(OUT_SQL), { recursive: true });
   fs.writeFileSync(OUT_SQL, out.join("\n") + "\n");
 
@@ -590,7 +807,7 @@ async function main(): Promise<void> {
       (stats.unknownCurrencies.size
         ? ` [${[...stats.unknownCurrencies].join(", ")}]`
         : "") +
-      `\n  rows: country=${countryRows.length} entity=${entityRows.length} coverage=${coverageRows.length}` +
+      `\n  rows: country=${countryRows.length} entity=${entityRows.length} coverage=${coverageRows.length} subdivision=${subdivRows.length}` +
       (allAwarded
         ? `\n  global awarded ≈ €${Math.round(allAwarded.sumEur).toLocaleString()} across ${allAwarded.count.toLocaleString()} awards`
         : ""),
