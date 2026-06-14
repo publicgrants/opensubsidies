@@ -32,11 +32,19 @@ export async function GET(req: Request) {
   try {
     // With a search term, run hybrid (semantic ⊕ keyword); otherwise plain
     // server-side filter/sort/paginate.
-    const data = query.q && query.q.trim()
+    const t0 = Date.now();
+    const hybrid = Boolean(query.q && query.q.trim());
+    const data = hybrid
       ? await queryGrantsHybrid(query, Date.now())
       : await queryGrants(query, Date.now());
-    // Filtered results vary by query; don't edge-cache.
-    return NextResponse.json(data, { headers: { "cache-control": "no-store" } });
+    // Filtered results vary by query; don't edge-cache. Server-Timing tags the
+    // path (hybrid search vs plain filter) and its DB+embedding cost.
+    return NextResponse.json(data, {
+      headers: {
+        "cache-control": "no-store",
+        "server-timing": `${hybrid ? "hybrid" : "query"};dur=${Date.now() - t0}`,
+      },
+    });
   } catch (e) {
     console.error("/api/grants failed", e);
     return NextResponse.json({ error: "query failed" }, { status: 500 });

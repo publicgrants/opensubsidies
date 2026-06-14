@@ -35,8 +35,6 @@ const CHOROPLETH_RAMP: Record<"received" | "awarded", [string, string]> = {
   received: ["#d1fae5", "#047857"],
   awarded: ["#ffedd5", "#c2410c"],
 };
-const NORWAY_VIEW = { center: [14, 65] as [number, number], zoom: 3.6 };
-
 // Geometry-backed subdivision levels. Each maps a GeoJSON file + a function that
 // derives the join code from a feature's properties (matching the rollup's
 // `subdivision` codes). City/poststed has no polygon geometry, so the map falls
@@ -64,6 +62,23 @@ type MapLevel = keyof typeof MAP_LEVELS;
 // Discover (provider/scheme density) colour ramp — distinct from the funding
 // received/awarded ramps.
 const DISCOVER_RAMP: [string, string] = ["#e0e7ff", "#4338ca"];
+
+// Linearly blend two #rrggbb colours (t in [0,1]) — used to derive a mid stop
+// for the log-scaled funding ramp so the middle of the range reads clearly.
+function mixHex(a: string, b: string, t: number): string {
+  const parse = (h: string): [number, number, number] => [
+    parseInt(h.slice(1, 3), 16),
+    parseInt(h.slice(3, 5), 16),
+    parseInt(h.slice(5, 7), 16),
+  ];
+  const [ar, ag, ab] = parse(a);
+  const [br, bg, bb] = parse(b);
+  const mix = (x: number, y: number) =>
+    Math.round(x + (y - x) * t)
+      .toString(16)
+      .padStart(2, "0");
+  return `#${mix(ar, br)}${mix(ag, bg)}${mix(ab, bb)}`;
+}
 
 // Supranational funder "countries" have no single polygon — kept off the world
 // choropleth and surfaced as offshore flag markers instead. EU sits in the
@@ -217,11 +232,8 @@ export function MapView() {
     displayCurrency,
     fundingAggregates,
     setFundingScope,
-    fundingScope,
     fundingProviderId,
     subdivisionMetric,
-    subdivisionLevel,
-    fundingSubdivisions,
     setSelectedCountry,
   } = useGrantsStore();
 
@@ -283,6 +295,7 @@ export function MapView() {
     kind: "discover" | "funding";
     data: Map<string, number>;
     ramp: [string, string];
+    scale: "linear" | "log";
   }>(() => {
     if (panelView === "discover") {
       const data = new Map<string, number>();
@@ -291,41 +304,34 @@ export function MapView() {
         const inc = metricMode === "schemes" ? f.schemes || 0 : 1; // else provider count
         data.set(f.country, (data.get(f.country) ?? 0) + inc);
       }
-      return { active: true, level: "world", kind: "discover", data, ramp: DISCOVER_RAMP };
+      return { active: true, level: "world", kind: "discover", data, ramp: DISCOVER_RAMP, scale: "linear" };
     }
-    // Funding views: Norway Fylke/Kommune money flow.
-    const scope = fundingProviderId
-      ? fundingProviderId
-      : fundingScope &&
-          (fundingScope === "NO" ||
-            fundingScope.startsWith("NO-") ||
-            /^\d{4}$/.test(fundingScope))
-        ? "NO"
-        : null;
-    const view: "received" | "awarded" = fundingProviderId
-      ? "received"
-      : panelView === "awarded"
-        ? "awarded"
-        : "received";
-    if (!scope) {
-      return { active: false, level: "fylke", kind: "funding", data: new Map(), ramp: CHOROPLETH_RAMP.received };
-    }
-    const rows = fundingSubdivisions[`${view}|${scope}|${subdivisionLevel}`] ?? [];
+    // Funding views: GLOBAL world-country money-flow choropleth. Each country is
+    // shaded by the money it received / awarded (from the funding_country rollup,
+    // already loaded into fundingAggregates by setPanelView). € totals span ~6
+    // orders of magnitude (US ≈ $945B vs tiny recipients), so we colour on a LOG
+    // scale to keep the map readable.
+    //
+    // The Norway Fylke/Kommune sub-national drill-down is SHELVED (not deleted):
+    // its rollups (funding_subdivision), geometry (MAP_LEVELS.fylke/kommune) and
+    // store plumbing remain in place for an easy revive. See git history.
+    const view: "received" | "awarded" = panelView === "awarded" ? "awarded" : "received";
+    const rows = fundingAggregates[view]?.countries ?? [];
     const data = new Map<string, number>();
-    for (const d of rows)
-      data.set(d.subdivision, subdivisionMetric === "count" ? d.awardCount : d.sumEur);
-    const level: MapLevel = subdivisionLevel === "fylke" ? "fylke" : "kommune";
-    return { active: true, level, kind: "funding", data, ramp: CHOROPLETH_RAMP[view] };
-  }, [
-    panelView,
-    funders,
-    metricMode,
-    fundingProviderId,
-    fundingScope,
-    subdivisionLevel,
-    subdivisionMetric,
-    fundingSubdivisions,
-  ]);
+    for (const c of rows) {
+      if (c.country === "ALL") continue; // global hero total, not a polygon
+      if (SUPRANATIONAL.has(c.country)) continue; // EU/CoE/INTL → offshore markers
+      data.set(c.country, subdivisionMetric === "count" ? c.awardCount : c.sumEur);
+    }
+    return {
+      active: data.size > 0,
+      level: "world",
+      kind: "funding",
+      data,
+      ramp: CHOROPLETH_RAMP[view],
+      scale: "log",
+    };
+  }, [panelView, funders, metricMode, fundingAggregates, subdivisionMetric]);
 
   const choroplethActive = choro.active;
   const mapLevel: MapLevel = choro.level;
@@ -335,7 +341,6 @@ export function MapView() {
     {},
   );
   const choroplethPopupRef = React.useRef<maplibregl.Popup | null>(null);
-  const prevActiveRef = React.useRef(false);
   // Which geometry is currently uploaded to the single choropleth source — so we
   // only re-upload polygons when the LEVEL changes, never on a colour change.
   const loadedLevelRef = React.useRef<MapLevel | null>(null);
@@ -562,15 +567,26 @@ export function MapView() {
 
     const [c0, c1] = choro.ramp;
     const hi = max > 0 ? max : 1;
-    map.setPaintProperty(FYLKE_FILL, "fill-color", [
-      "interpolate",
-      ["linear"],
-      ["coalesce", ["feature-state", "val"], 0],
-      0,
-      c0,
-      hi,
-      c1,
-    ]);
+    // Linear for discover (provider/scheme counts), log for funding € totals
+    // (which span many orders of magnitude). For log we colour by ln(1 + val) so
+    // 0 maps to the light end and the largest value to the strong end, with a mid
+    // stop to spread the middle of the range.
+    const valExpr = ["coalesce", ["feature-state", "val"], 0];
+    const fillColor =
+      choro.scale === "log"
+        ? [
+            "interpolate",
+            ["linear"],
+            ["ln", ["+", 1, valExpr]],
+            0,
+            c0,
+            Math.log(1 + hi) / 2,
+            mixHex(c0, c1, 0.5),
+            Math.log(1 + hi),
+            c1,
+          ]
+        : ["interpolate", ["linear"], valExpr, 0, c0, hi, c1];
+    map.setPaintProperty(FYLKE_FILL, "fill-color", fillColor);
     map.setPaintProperty(FYLKE_FILL, "fill-opacity", [
       "case",
       ["==", ["coalesce", ["feature-state", "has"], 0], 1],
@@ -627,49 +643,65 @@ export function MapView() {
     applyChoropleth();
   }, [applyChoropleth]);
 
-  // Fly to Norway only when a FUNDING choropleth first activates (discover is the
-  // whole-world view, so it stays at the global camera).
-  React.useEffect(() => {
-    const flyFunding = choro.active && choro.kind === "funding";
-    if (flyFunding && !prevActiveRef.current && mapRef.current) {
-      isAnimatingRef.current = true;
-      mapRef.current.flyTo({
-        center: NORWAY_VIEW.center,
-        zoom: NORWAY_VIEW.zoom,
-        essential: true,
-      });
-    }
-    prevActiveRef.current = flyFunding;
-  }, [choro]);
+  // Funding views are now GLOBAL (world-country choropleth), so the camera stays
+  // at the world view — no auto fly-to. (Previously this flew to a hardcoded
+  // Norway view when the Fylke choropleth activated; that sub-national layer is
+  // shelved. See git history to revive a per-country fly-to on drill-down.)
 
-  // Supranational funders (EU / CoE / INTL) have no country polygon, so on the
-  // discover world map each is surfaced as a flag marker parked offshore (EU in
-  // the Atlantic next to Europe; the rest nearby). Click → filter the schemes
-  // list to that funder group.
+  // Supranational funders (EU / CoE / INTL) have no country polygon, so each is
+  // surfaced as a flag marker parked offshore (EU in the Atlantic next to Europe;
+  // the rest nearby) on EVERY lens. On discover the chip shows the group's scheme
+  // count (click → filter the list); on a funding lens it shows the money the
+  // group received / awarded (click → focus its leaderboard). The EU is the
+  // single largest awarder, so keeping it visible on the funding lenses matters.
   const supraMarkersRef = React.useRef<Map<string, maplibregl.Marker>>(new Map());
+  // Latest click handler per lens, read by the (once-attached) marker listeners.
+  const supraClickRef = React.useRef<(code: string) => void>(() => {});
+  supraClickRef.current = (code: string) => {
+    if (panelView === "discover") setSelectedCountry(code);
+    else setFundingScope(code);
+  };
   React.useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const markers = supraMarkersRef.current;
-    const clearAll = () => {
-      markers.forEach((m) => m.remove());
-      markers.clear();
-    };
-    if (panelView !== "discover") return clearAll();
 
-    // Scheme totals per supranational code.
-    const schemesByCode = new Map<string, number>();
-    for (const f of funders) {
-      if (SUPRANATIONAL.has(f.country)) {
-        schemesByCode.set(f.country, (schemesByCode.get(f.country) ?? 0) + (f.schemes || 0));
+    const fundingView: "received" | "awarded" | null =
+      panelView === "received" || panelView === "awarded" ? panelView : null;
+
+    // Per-code label for the active lens, or null when the group has no data.
+    const labelFor = (code: string): string | null => {
+      if (!fundingView) {
+        let schemes = 0;
+        for (const f of funders)
+          if (f.country === code) schemes += f.schemes || 0;
+        return schemes > 0 ? `${schemes.toLocaleString()} schemes` : null;
       }
-    }
+      const row = fundingAggregates[fundingView]?.countries.find(
+        (c) => c.country === code,
+      );
+      if (!row) return null;
+      if (subdivisionMetric === "count")
+        return `${row.awardCount.toLocaleString()} awards`;
+      const body = fromEur(row.sumEur, displayCurrency);
+      const compact =
+        body >= 1e9
+          ? `${(body / 1e9).toFixed(1)}B`
+          : body >= 1e6
+            ? `${(body / 1e6).toFixed(1)}M`
+            : body >= 1e3
+              ? `${(body / 1e3).toFixed(0)}K`
+              : `${Math.round(body)}`;
+      return displayCurrency === "NOK"
+        ? `${compact} kr`
+        : `${CURRENCY_SYMBOL[displayCurrency]}${compact}`;
+    };
 
     for (const spec of SUPRA_MARKERS) {
-      const schemes = schemesByCode.get(spec.code) ?? 0;
+      const valueLabel = labelFor(spec.code);
       const existing = markers.get(spec.code);
-      if (schemes === 0) {
-        // No funders for this group → no marker.
+      if (valueLabel === null) {
+        // No data for this group on the active lens → no marker.
         if (existing) {
           existing.remove();
           markers.delete(spec.code);
@@ -679,27 +711,26 @@ export function MapView() {
       if (!existing) {
         const el = document.createElement("button");
         el.type = "button";
-        el.title = `${spec.label} funders — click to see their grant schemes`;
         el.style.cssText =
           "display:flex;align-items:center;gap:5px;background:#1b3a8c;color:#fff;" +
           "border:1px solid rgba(255,255,255,0.55);border-radius:9999px;padding:3px 9px;" +
           "font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;" +
           "box-shadow:0 2px 6px rgba(0,0,0,0.35);";
         el.innerHTML = `<span style="font-size:14px;line-height:1">${spec.emoji}</span><span class="supra-count"></span>`;
-        el.addEventListener("click", () => setSelectedCountry(spec.code));
+        el.addEventListener("click", () => supraClickRef.current(spec.code));
         const marker = new maplibregl.Marker({ element: el })
           .setLngLat([spec.at.lng, spec.at.lat])
           .addTo(map);
         markers.set(spec.code, marker);
       }
-      const countEl = markers
-        .get(spec.code)!
-        .getElement()
-        .querySelector(".supra-count");
-      if (countEl)
-        countEl.textContent = `${spec.label} · ${schemes.toLocaleString()} schemes`;
+      const markerEl = markers.get(spec.code)!.getElement();
+      markerEl.title = fundingView
+        ? `${spec.label} — click to focus its ${fundingView === "received" ? "recipients" : "funders"}`
+        : `${spec.label} funders — click to see their grant schemes`;
+      const countEl = markerEl.querySelector(".supra-count");
+      if (countEl) countEl.textContent = `${spec.label} · ${valueLabel}`;
     }
-  }, [panelView, funders, setSelectedCountry]);
+  }, [panelView, funders, fundingAggregates, subdivisionMetric, displayCurrency, setSelectedCountry, setFundingScope]);
 
   // Initialize map once
   React.useEffect(() => {

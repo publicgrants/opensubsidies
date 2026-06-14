@@ -4,56 +4,28 @@ import * as React from "react";
 import {
   Bookmark,
   Clock,
-  Search,
   X,
   Loader2,
-  ArrowUpDown,
-  ArrowDownAZ,
-  ArrowUpAZ,
-  CalendarArrowDown,
-  CalendarArrowUp,
-  Check,
   Globe2,
   Sparkles,
   ExternalLink,
   CalendarClock,
   Banknote,
   Target,
-  Layers,
   Building2,
   ScrollText,
   ChevronRight,
-  ChevronDown,
-  ChevronUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { useGrantsStore, type GrantSortBy, type FundingSizeBucket } from "@/store/maps-store";
+import { useGrantsStore } from "@/store/maps-store";
 import { fetchGrantProse } from "@/mock-data/locations";
 import type {
   Grant,
   GrantStatus,
   InstrumentType,
 } from "@/mock-data/locations";
-import { SidebarTrigger } from "@/components/ui/sidebar";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { useMediaQuery } from "usehooks-ts";
-import { FundingCard } from "@/components/dashboard/funding-card";
-import { ModeSwitchInline } from "@/components/dashboard/mode-tabs";
 
 type PanelMode = "all" | "favorites" | "recents";
 
@@ -61,7 +33,7 @@ interface GrantsPanelProps {
   mode?: PanelMode;
 }
 
-const panelConfig = {
+export const panelConfig = {
   all: {
     title: "Discover Grants",
     subtitleSingular: "grant scheme indexed",
@@ -113,15 +85,6 @@ const STATUS_META: Record<GrantStatus, { label: string; cls: string; dot: string
     dot: "bg-muted-foreground",
   },
 };
-
-const FUNDING_BUCKETS: { id: FundingSizeBucket; label: string }[] = [
-  { id: "any", label: "Any size" },
-  { id: "micro", label: "< €100K — Micro" },
-  { id: "small", label: "€100K – €500K" },
-  { id: "mid", label: "€500K – €2M" },
-  { id: "large", label: "€2M – €10M" },
-  { id: "mega", label: "> €10M — Mega" },
-];
 
 function symbolFor(currency: string): string {
   switch (currency) {
@@ -206,41 +169,22 @@ const INSTRUMENT_LABEL: Record<InstrumentType, string> = {
   unknown: "Unspecified instrument",
 };
 
-export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
+// The scrollable results list (grant cards + expandable detail) shown inside the
+// ResultsDrawer. Search, sort, filters and the lens switch now live in
+// <GlobeSearch/>; the drawer owns the shell + header. This is just the list body,
+// so it is reused for Discover, Watchlist and Recently-viewed alike.
+export function GrantResultsList({ mode = "all" }: GrantsPanelProps) {
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
 
   const {
     selectedGrantId,
-    searchQuery,
-    sortBy,
-    fundingSize,
-    selectedStatuses,
     toggleSaved,
-    setSearchQuery,
-    setSortBy,
-    setFundingSize,
-    toggleStatus,
     selectGrant,
     getFilteredGrants,
     getSavedGrants,
     getRecentGrants,
-    isPanelVisible,
-    setPanelVisible,
-    getGlobalStats,
-    metricMode,
-    isGrantsListExpanded,
-    setGrantsListExpanded,
     funders,
-    panelView,
   } = useGrantsStore();
-
-  const isDesktop = useMediaQuery("(min-width: 640px)");
-
-  React.useEffect(() => {
-    if (isDesktop && !isPanelVisible) setPanelVisible(true);
-  }, [isDesktop, isPanelVisible, setPanelVisible]);
-
-  const stats = getGlobalStats();
 
   const getGrants = () => {
     switch (mode) {
@@ -287,379 +231,61 @@ export function MapsPanel({ mode = "all" }: GrantsPanelProps) {
     selectGrant(null);
   };
 
-  if (!isPanelVisible) {
-    return (
-      <Button
-        variant="outline"
-        size="icon"
-        className="absolute left-4 top-4 z-20 sm:hidden size-11 bg-background! dash-floating"
-        onClick={() => setPanelVisible(true)}
-        aria-label="Open OpenSubsidies panel"
-      >
-        <Globe2 className="size-5" />
-      </Button>
-    );
-  }
-
-  // Funding views morph the whole card into the funding experience (home route
-  // only — Watchlist/Recents keep the discover card).
-  if (mode === "all" && (panelView === "received" || panelView === "awarded")) {
-    return <FundingCard view={panelView} />;
-  }
-
-  let subtitle: string;
-  if (mode === "all") {
-    if (metricMode === "providers") {
-      subtitle = `${funders.length.toLocaleString()} grant providers`;
-    } else if (metricMode === "funding") {
-      subtitle = "No funding data yet — disbursements not tracked";
-    } else {
-      subtitle = `${grants.length.toLocaleString()} ${grants.length === 1 ? config.subtitleSingular : config.subtitlePlural}`;
-    }
-  } else {
-    subtitle = `${grants.length} ${grants.length === 1 ? config.subtitleSingular : config.subtitlePlural}`;
-  }
-
-  // When the grants list is collapsed, release the bottom anchor so the panel
-  // shrinks to its header + filters and the map below becomes interactive.
-  const listExpanded = isGrantsListExpanded;
-
   return (
-    <div
-      className={cn(
-        "absolute left-4 top-4 z-20 flex flex-col bg-background rounded-2xl dash-panel border overflow-hidden w-80 sm:w-[420px]",
-        listExpanded ? "bottom-4" : "max-h-[calc(100%-2rem)]",
-      )}
-    >
-      {/* Mode switch (home only) — sits with the card it controls */}
-      {mode === "all" && <ModeSwitchInline className="mx-3 mt-3" />}
-
-      {/* Header */}
-      <div className="px-3 pt-3 pb-2 border-b">
-        <div className="flex items-start justify-between mb-2">
-          <div className="flex items-start gap-1.5 min-w-0">
-            <SidebarTrigger className="size-7 -ml-1 shrink-0" />
-            <div className="min-w-0">
-              <h2 className="font-semibold text-base flex items-center gap-2">
-                {mode === "recents" && <Clock className="size-4" />}
-                {mode === "favorites" && <Bookmark className="size-4" />}
-                {mode === "all" && <Globe2 className="size-4" />}
-                {config.title}
-              </h2>
-              <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
-            </div>
+    <div ref={scrollContainerRef} className="h-full overflow-y-auto">
+      <div className="p-2 space-y-2">
+        {grants.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-14 text-center px-4">
+            <EmptyIcon className="size-8 text-muted-foreground mb-2" />
+            <p className="text-sm font-medium">{config.emptyTitle}</p>
+            <p className="text-xs text-muted-foreground mt-1 max-w-[260px]">
+              {config.emptyDescription}
+            </p>
           </div>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              onClick={() => setGrantsListExpanded(!listExpanded)}
-              aria-label={listExpanded ? "Collapse list" : "Expand list"}
-              title={listExpanded ? "Collapse list" : "Expand list"}
-            >
-              {listExpanded ? (
-                <ChevronUp className="size-4" />
-              ) : (
-                <ChevronDown className="size-4" />
-              )}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7 sm:hidden"
-              onClick={() => setPanelVisible(false)}
-              aria-label="Close panel"
-            >
-              <X className="size-4" />
-            </Button>
-          </div>
-        </div>
+        ) : (
+          grants.map((grant) => {
+            const funder = funders.find((f) => f.id === grant.funderId);
+            const isSelected = selectedGrantId === grant.id;
 
-        {/* Global stats — only on Discover */}
-        {mode === "all" && (
-          <div className="grid grid-cols-3 gap-1 mt-2">
-            <StatPill
-              label="Open now"
-              value={stats.openNow.toString()}
-              accent="emerald"
-            />
-            <StatPill
-              label="Countries"
-              value={stats.countriesCovered.toString()}
-              accent="brand"
-            />
-            <StatPill
-              label="Funders"
-              value={stats.fundersIndexed.toString()}
-              accent="muted"
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Search + filters */}
-      <div className="p-2 border-b space-y-2">
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
-            <Input
-              type="search"
-              placeholder="Search grants, funders…"
-              aria-label="Search grants and funders"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className={cn("pl-8 h-9", searchQuery && "pr-8")}
-            />
-            {searchQuery && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="absolute right-1 top-1/2 -translate-y-1/2 size-7"
-                onClick={() => setSearchQuery("")}
-                aria-label="Clear search"
-              >
-                <X className="size-3.5" />
-              </Button>
-            )}
-          </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon" className="size-9 shrink-0" title="Sort grants" aria-label="Sort grants">
-                <ArrowUpDown className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuLabel className="text-[10px] uppercase tracking-wider">
-                Sort grants by
-              </DropdownMenuLabel>
-              <SortItem id="deadline-soonest" current={sortBy} setSortBy={setSortBy} icon={CalendarClock}>
-                Deadline (soonest)
-              </SortItem>
-              <SortItem id="funding-largest" current={sortBy} setSortBy={setSortBy} icon={Banknote}>
-                Largest funding ceiling
-              </SortItem>
-              <DropdownMenuSeparator />
-              <SortItem id="newest" current={sortBy} setSortBy={setSortBy} icon={CalendarArrowDown}>
-                Newest first
-              </SortItem>
-              <SortItem id="oldest" current={sortBy} setSortBy={setSortBy} icon={CalendarArrowUp}>
-                Oldest first
-              </SortItem>
-              <SortItem id="alpha-az" current={sortBy} setSortBy={setSortBy} icon={ArrowDownAZ}>
-                A → Z
-              </SortItem>
-              <SortItem id="alpha-za" current={sortBy} setSortBy={setSortBy} icon={ArrowUpAZ}>
-                Z → A
-              </SortItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon" className="size-9 shrink-0" title="Filters" aria-label="Filter grants by status and size">
-                <Layers className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuLabel className="text-[10px] uppercase tracking-wider">
-                Status
-              </DropdownMenuLabel>
-              {(["open", "closing-soon", "upcoming", "closed"] as GrantStatus[]).map((s) => (
-                <DropdownMenuItem
-                  key={s}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    toggleStatus(s);
-                  }}
-                  className="gap-2"
-                >
-                  <span className={cn("inline-block size-2 rounded-full", STATUS_META[s].dot)} />
-                  <span className="flex-1">{STATUS_META[s].label}</span>
-                  {selectedStatuses.includes(s) && <Check className="size-4" />}
-                </DropdownMenuItem>
-              ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel className="text-[10px] uppercase tracking-wider">
-                Grant size
-              </DropdownMenuLabel>
-              {FUNDING_BUCKETS.map((b) => (
-                <DropdownMenuItem
-                  key={b.id}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setFundingSize(b.id);
-                  }}
-                  className="gap-2"
-                >
-                  <Banknote className="size-3.5" />
-                  <span className="flex-1">{b.label}</span>
-                  {fundingSize === b.id && <Check className="size-4" />}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-
-        {/* Active status chips for quick toggling */}
-        <div className="flex items-center gap-1 overflow-x-auto pb-0.5 -mx-0.5 px-0.5 scrollbar-thin">
-          {(["open", "closing-soon", "upcoming"] as GrantStatus[]).map((s) => {
-            const active = selectedStatuses.includes(s);
-            return (
-              <button
-                key={s}
-                type="button"
-                onClick={() => toggleStatus(s)}
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap transition-colors",
-                  active
-                    ? STATUS_META[s].cls
-                    : "bg-background text-muted-foreground hover:bg-accent border-border"
-                )}
-              >
-                <span className={cn("inline-block size-1.5 rounded-full", STATUS_META[s].dot)} />
-                {STATUS_META[s].label}
-              </button>
-            );
-          })}
-          {fundingSize !== "any" && (
-            <button
-              type="button"
-              onClick={() => setFundingSize("any")}
-              aria-label={`Clear grant size filter (${FUNDING_BUCKETS.find((b) => b.id === fundingSize)?.label})`}
-              className="inline-flex items-center gap-1.5 rounded-full border bg-muted text-foreground border-border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap transition-colors duration-150"
-            >
-              <Banknote className="size-3" />
-              {FUNDING_BUCKETS.find((b) => b.id === fundingSize)?.label}
-              <X className="size-3" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Collapsible list / detail — collapse to free the map underneath */}
-      <Collapsible
-        open={listExpanded}
-        onOpenChange={setGrantsListExpanded}
-        className={cn("flex flex-col min-h-0", listExpanded && "flex-1")}
-      >
-        <CollapsibleTrigger className="flex items-center gap-2 w-full px-3 py-2 border-b text-xs font-medium hover:bg-accent/50 transition-colors">
-          {listExpanded ? (
-            <ChevronDown className="size-4" />
-          ) : (
-            <ChevronRight className="size-4" />
-          )}
-          <span>{mode === "all" ? "Discovered grants" : config.title}</span>
-          <span className="ml-auto inline-flex items-center gap-1.5">
-            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
-              {grants.length}
-            </span>
-            <span className="text-[10px] font-medium text-muted-foreground">
-              {listExpanded ? "Hide" : "Show"}
-            </span>
-          </span>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="flex-1 min-h-0 overflow-hidden data-[state=closed]:hidden">
-          <div ref={scrollContainerRef} className="h-full overflow-y-auto">
-            <div className="p-2 space-y-2">
-              {grants.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-14 text-center px-4">
-              <EmptyIcon className="size-8 text-muted-foreground mb-2" />
-              <p className="text-sm font-medium">{config.emptyTitle}</p>
-              <p className="text-xs text-muted-foreground mt-1 max-w-[260px]">
-                {config.emptyDescription}
-              </p>
-            </div>
-          ) : (
-            grants.map((grant) => {
-              const funder = funders.find((f) => f.id === grant.funderId);
-              const isSelected = selectedGrantId === grant.id;
-
-              if (isSelected) {
-                return (
-                  <GrantDetail
-                    key={grant.id}
-                    grant={grant}
-                    funderName={funder?.name ?? ""}
-                    funderShort={funder?.shortName ?? ""}
-                    funderFaviconUrl={funder?.faviconUrl ?? ""}
-                    funderHQ={funder?.hq ?? ""}
-                    funderType={funder?.type ?? "unknown"}
-                    funderCountryName={funder?.countryName ?? ""}
-                    onClose={handleClose}
-                    onToggleSaved={() => toggleSaved(grant.id)}
-                  />
-                );
-              }
-
+            if (isSelected) {
               return (
-                <GrantCard
+                <GrantDetail
                   key={grant.id}
                   grant={grant}
                   funderName={funder?.name ?? ""}
                   funderShort={funder?.shortName ?? ""}
                   funderFaviconUrl={funder?.faviconUrl ?? ""}
-                  onClick={() => handleGrantClick(grant)}
-                  onToggleSaved={(e) => {
-                    e.stopPropagation();
-                    toggleSaved(grant.id);
-                  }}
+                  funderHQ={funder?.hq ?? ""}
+                  funderType={funder?.type ?? "unknown"}
+                  funderCountryName={funder?.countryName ?? ""}
+                  onClose={handleClose}
+                  onToggleSaved={() => toggleSaved(grant.id)}
                 />
               );
-            })
-          )}
-            </div>
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+            }
+
+            return (
+              <GrantCard
+                key={grant.id}
+                grant={grant}
+                funderName={funder?.name ?? ""}
+                funderShort={funder?.shortName ?? ""}
+                funderFaviconUrl={funder?.faviconUrl ?? ""}
+                onClick={() => handleGrantClick(grant)}
+                onToggleSaved={(e) => {
+                  e.stopPropagation();
+                  toggleSaved(grant.id);
+                }}
+              />
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
-
-function SortItem({
-  id,
-  current,
-  setSortBy,
-  icon: Icon,
-  children,
-}: {
-  id: GrantSortBy;
-  current: GrantSortBy;
-  setSortBy: (s: GrantSortBy) => void;
-  icon: React.ComponentType<{ className?: string }>;
-  children: React.ReactNode;
-}) {
-  return (
-    <DropdownMenuItem onClick={() => setSortBy(id)} className="gap-2">
-      <Icon className="size-4" />
-      <span className="flex-1">{children}</span>
-      {current === id && <Check className="size-4" />}
-    </DropdownMenuItem>
-  );
-}
-
-function StatPill({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: string;
-  accent: "emerald" | "brand" | "muted";
-}) {
-  const tones = {
-    emerald: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20",
-    brand: "bg-foreground/5 text-foreground border-border",
-    muted: "bg-muted text-foreground border-border",
-  } as const;
-  return (
-    <div className={cn("rounded-md border px-2 py-1.5", tones[accent])}>
-      <div className="text-[10px] uppercase tracking-wider opacity-80 leading-none">{label}</div>
-      <div className="text-sm font-semibold mt-1 tabular-nums leading-none">{value}</div>
-    </div>
-  );
-}
 
 function GrantCard({
   grant,
@@ -900,10 +526,6 @@ function GrantDetail({
   onToggleSaved: () => void;
 }) {
   const [isOpening, setIsOpening] = React.useState(false);
-  // Bridge into the funding view, drilling into this grant's funder so the map
-  // shows where its money flows (by Fylke) + its top receivers.
-  const setPanelView = useGrantsStore((s) => s.setPanelView);
-  const setFundingProvider = useGrantsStore((s) => s.setFundingProvider);
   // Prose is not in the lean catalog; fetch it on demand for the detail card.
   const [prose, setProse] = React.useState(grant.prose);
   React.useEffect(() => {
@@ -1020,26 +642,6 @@ function GrantDetail({
             <span className="capitalize">{funderType}</span>
           </span>
         </div>
-
-        {/* Bridge: jump to this funder's payouts in the funding view */}
-        <button
-          type="button"
-          onClick={() => {
-            setPanelView("received");
-            setFundingProvider(grant.funderId);
-          }}
-          className="mb-4 flex w-full items-center justify-between gap-2 rounded-lg border bg-background/60 px-3 py-2 text-xs transition-colors hover:bg-accent"
-        >
-          <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-            <Banknote className="size-3.5" />
-            See where{" "}
-            <span className="font-medium text-foreground">
-              {funderShort || funderName}
-            </span>
-            ’s money flows
-          </span>
-          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
-        </button>
 
         {/* Short description */}
         {grant.description && (

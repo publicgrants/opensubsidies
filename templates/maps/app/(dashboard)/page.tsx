@@ -2,7 +2,8 @@
 
 import * as React from "react";
 import { MapView } from "@/components/dashboard/map-view";
-import { MapsPanel } from "@/components/dashboard/maps-panel";
+import { GlobeSearch } from "@/components/dashboard/globe-search";
+import { ResultsDrawer } from "@/components/dashboard/results-drawer";
 import { MapControls } from "@/components/dashboard/map-controls";
 import { ModeTabs } from "@/components/dashboard/mode-tabs";
 import { useGrantsStore } from "@/store/maps-store";
@@ -18,7 +19,8 @@ export default function MapsPage() {
   return (
     <div className="relative h-full w-full overflow-hidden">
       <MapView />
-      <MapsPanel />
+      <GlobeSearch />
+      <ResultsDrawer />
       <MapControls />
       <ModeTabs />
       {loadError && (

@@ -116,6 +116,9 @@ interface GrantsState {
   viewMode: ViewMode;
   metricMode: MetricMode;
   isGrantsListExpanded: boolean;
+  // Search-first canvas: the results drawer is collapsed by default so the globe
+  // is unobstructed; it opens when the user searches or clicks a country/region.
+  resultsOpen: boolean;
 
   // Funding layer (lazy-loaded; populated on first switch to a funding view)
   panelView: PanelView;
@@ -159,6 +162,7 @@ interface GrantsState {
   setViewMode: (m: ViewMode) => void;
   setMetricMode: (m: MetricMode) => void;
   setGrantsListExpanded: (v: boolean) => void;
+  setResultsOpen: (v: boolean) => void;
 
   // Funding actions
   setPanelView: (v: PanelView) => void;
@@ -224,6 +228,7 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
   viewMode: "split",
   metricMode: "schemes",
   isGrantsListExpanded: true,
+  resultsOpen: false,
 
   panelView: "discover",
   displayCurrency: "EUR",
@@ -241,16 +246,52 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
 
   initialize: async () => {
     if (get().loaded || get().loading) return;
-    set({ loading: true, loadError: null });
+    set({ loading: true, loadError: null, grantsLoading: true });
+    // Kick off BOTH round-trips at once: the aggregate (drives the globe choropleth
+    // + sidebar counts) and the first grants page. Previously these ran serially,
+    // so first paint waited for two sequential D1 hits. The grants request is
+    // tagged with reqSeq so a filter change mid-load cleanly supersedes it.
+    const seq = ++reqSeq;
+    const s = get();
+    const grantsP = fetchGrantsPage({
+      country: s.selectedCountry,
+      instrumentTypes: s.selectedInstrumentTypes,
+      statuses: s.selectedStatuses,
+      funderTypes: s.selectedFunderTypes,
+      applicationMode: s.selectedApplicationMode,
+      fundingSize: s.fundingSize,
+      q: s.searchQuery,
+      sortBy: s.sortBy,
+      page: 0,
+      pageSize: PAGE_SIZE,
+    });
     try {
       const { funders, stats } = await fetchAggregate();
       set({ funders, stats, loaded: true, loading: false });
-      await get().refetchGrants();
     } catch (e) {
+      // Aggregate failed → bail. Mark the in-flight grants promise handled so a
+      // late rejection doesn't surface as an unhandled rejection.
+      grantsP.catch(() => {});
       set({
         loading: false,
+        grantsLoading: false,
         loadError: e instanceof Error ? e.message : String(e),
       });
+      return;
+    }
+    try {
+      const { grants, total } = await grantsP;
+      if (seq !== reqSeq) return; // a newer page fetch superseded the initial load
+      const saved = get().savedIds;
+      const cache = new Map(get().grantCache);
+      const withSaved = grants.map((g) => {
+        const merged = { ...g, isSaved: saved.has(g.id) };
+        cache.set(g.id, merged);
+        return merged;
+      });
+      set({ grants: withSaved, total, grantsLoading: false, grantCache: cache });
+    } catch {
+      if (seq === reqSeq) set({ grantsLoading: false });
     }
   },
 
@@ -289,6 +330,8 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
   setSelectedCountry: (country) => {
     const state = get();
     const next: Partial<GrantsState> = { selectedCountry: country };
+    // Picking a country (sidebar or map click) reveals the results drawer.
+    if (country !== "all") next.resultsOpen = true;
     if (state.selectedGrantId && country !== "all") {
       const g = state.grantCache.get(state.selectedGrantId);
       if (g) {
@@ -343,7 +386,8 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
   },
 
   setSearchQuery: (q) => {
-    set({ searchQuery: q });
+    // Typing a query reveals the results drawer (search-first canvas).
+    set(q ? { searchQuery: q, resultsOpen: true } : { searchQuery: q });
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(() => void get().refetchGrants(), 300);
   },
@@ -403,39 +447,47 @@ export const useGrantsStore = create<GrantsState>((set, get) => {
   setViewMode: (m) => set({ viewMode: m }),
   setMetricMode: (m) => set({ metricMode: m }),
   setGrantsListExpanded: (v) => set({ isGrantsListExpanded: v }),
+  setResultsOpen: (v) => set({ resultsOpen: v }),
 
   // ── Funding actions (lazy-load; never block initialize) ──
   setPanelView: (v) => {
     const fv = fundingViewOf(v);
-    // Money-flow is now the default: entering a funding view auto-focuses the
-    // POC country (Norway) so the Fylke choropleth shows immediately — no click,
-    // no bubbles. Preserves an existing scope if the user already drilled in.
-    const scope = fv ? (get().fundingScope ?? "NO") : get().fundingScope;
+    // Funding views open on the GLOBAL world choropleth (every country shaded by
+    // money received / awarded). No country is pre-focused — an existing country
+    // scope is preserved so flipping received↔awarded keeps your place.
+    //
+    // (Historical note: this used to default the scope to "NO", which forced an
+    // unwanted Norway zoom + Fylke choropleth. The Norway sub-national layer is
+    // shelved — see the commented funding branch in map-view.tsx `choro`.)
     set({
       panelView: v,
       selectedFundingEntityId: null,
       fundingProviderId: null,
-      fundingScope: scope,
+      // Entering a funding lens reveals its hero + leaderboard in the drawer.
+      ...(fv ? { resultsOpen: true } : {}),
     });
     if (fv) {
       void get().loadFundingAggregate(fv);
-      void get().loadFundingLeaderboard(fv, scope ?? "ALL");
-      void get().loadFundingSubdivisions(fv, "NO", get().subdivisionLevel);
+      void get().loadFundingLeaderboard(fv, get().fundingScope ?? "ALL");
     }
   },
 
   setDisplayCurrency: (c) => set({ displayCurrency: c }),
 
   setFundingScope: (country) => {
-    // Changing scope leaves any provider drill-down (scope wins).
-    set({ fundingScope: country, selectedFundingEntityId: null, fundingProviderId: null });
+    // Clicking a country on the funding choropleth focuses its leaderboard (top
+    // recipients / funders) and reveals the results drawer. The world choropleth
+    // itself stays global.
+    set({
+      fundingScope: country,
+      selectedFundingEntityId: null,
+      fundingProviderId: null,
+      ...(country ? { resultsOpen: true } : {}),
+    });
     const fv = fundingViewOf(get().panelView);
     if (!fv) return;
     void get().loadFundingLeaderboard(fv, country ?? "ALL");
-    // Scoping to a subdivision country (NO) → ensure its choropleth data is loaded.
-    if (country && SUBDIVISION_COUNTRIES.has(country)) {
-      void get().loadFundingSubdivisions(fv, country, get().subdivisionLevel);
-    }
+    // (Sub-national Fylke/Kommune drill-down is shelved — see SUBDIVISION_COUNTRIES.)
   },
 
   selectFundingEntity: (id) => set({ selectedFundingEntityId: id }),

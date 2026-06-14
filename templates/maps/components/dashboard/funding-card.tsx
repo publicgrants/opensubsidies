@@ -5,28 +5,21 @@ import {
   X,
   Info,
   ChevronDown,
-  ChevronUp,
   ChevronRight,
   ArrowLeft,
-  ArrowDownToLine,
-  ArrowUpFromLine,
   Building2,
   MapPin,
   Coins,
   Hash,
 } from "lucide-react";
-import { subdivisionLabel } from "@/mock-data/subdivisions";
 
-import { Button } from "@/components/ui/button";
-import { SidebarTrigger } from "@/components/ui/sidebar";
-import { ModeSwitchInline } from "@/components/dashboard/mode-tabs";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { useGrantsStore, type PanelView } from "@/store/maps-store";
+import { useGrantsStore } from "@/store/maps-store";
 import {
   CURRENCY_SYMBOL,
   DISPLAY_CURRENCIES,
@@ -103,149 +96,49 @@ export function FundingCard({ view }: { view: FundingView }) {
   const setFundingScope = useGrantsStore((s) => s.setFundingScope);
   const selectedId = useGrantsStore((s) => s.selectedFundingEntityId);
   const selectFundingEntity = useGrantsStore((s) => s.selectFundingEntity);
-  const listExpanded = useGrantsStore((s) => s.isGrantsListExpanded);
-  const setGrantsListExpanded = useGrantsStore((s) => s.setGrantsListExpanded);
-  const setPanelVisible = useGrantsStore((s) => s.setPanelVisible);
   // Read the funding caches directly (deriving below) so the card re-renders
   // when data lands, without returning fresh arrays from a selector.
   const fundingAggregates = useGrantsStore((s) => s.fundingAggregates);
   const fundingLeaderboards = useGrantsStore((s) => s.fundingLeaderboards);
-  // Subdivision (Fylke) layer state.
   const subdivisionMetric = useGrantsStore((s) => s.subdivisionMetric);
   const setSubdivisionMetric = useGrantsStore((s) => s.setSubdivisionMetric);
-  const subdivisionLevel = useGrantsStore((s) => s.subdivisionLevel);
-  const setSubdivisionLevel = useGrantsStore((s) => s.setSubdivisionLevel);
-  const fundingSubdivisions = useGrantsStore((s) => s.fundingSubdivisions);
-  const fundingProviderId = useGrantsStore((s) => s.fundingProviderId);
-  const setFundingProvider = useGrantsStore((s) => s.setFundingProvider);
 
   const scope = fundingScope ?? "ALL";
-  const isFylkeScope = scope.startsWith("NO-");
-  const isKommuneScope = /^\d{4}$/.test(scope); // a clicked kommune number
-  const isSubdivScope = isFylkeScope || isKommuneScope;
   const aggregate = fundingAggregates[view] ?? null;
   const leaderboard = fundingLeaderboards[`${view}|${scope}`] ?? [];
-  // Hero row: a country row for country scope, or a subdivision row for a Fylke
-  // (NO-xx) / Kommune (4-digit) scope, read from the matching-level NO rollup.
-  const subsForScope =
-    fundingSubdivisions[`${view}|NO|${isKommuneScope ? "kommune" : "fylke"}`] ??
-    [];
-  const subdivRow = isSubdivScope
-    ? (subsForScope.find((d) => d.subdivision === scope) ?? null)
-    : null;
-  const scopeRow = isSubdivScope
-    ? subdivRow
-      ? {
-          sumEur: subdivRow.sumEur,
-          awardCount: subdivRow.awardCount,
-          medianEur: subdivRow.medianEur,
-          nativeCurrency: subdivRow.nativeCurrency,
-          sumNative: subdivRow.sumNative,
-        }
-      : null
-    : (aggregate?.countries.find((c) => c.country === scope) ?? null);
+  // Hero row: the global "ALL" total, or a clicked country's row.
+  const scopeRow = aggregate?.countries.find((c) => c.country === scope) ?? null;
   const coverage =
-    scope !== "ALL" && !isSubdivScope
+    scope !== "ALL"
       ? (aggregate?.coverage.find((c) => c.country === scope) ?? null)
       : null;
 
-  // The Fylke choropleth is on screen when focused on Norway or drilled into a
-  // provider — surface the metric (€ / count) toggle then.
-  const showMetricToggle =
-    !!fundingProviderId || scope === "NO" || isSubdivScope;
-  const providerFunder = fundingProviderId
-    ? (funders.find((f) => f.id === fundingProviderId) ?? null)
-    : null;
-  const providerReceivers = fundingProviderId
-    ? (fundingLeaderboards[`received|${fundingProviderId}`] ?? [])
-    : [];
-  const providerSubs = fundingProviderId
-    ? (fundingSubdivisions[`received|${fundingProviderId}|${subdivisionLevel}`] ??
-      [])
-    : [];
-  const providerSumEur = providerSubs.reduce((a, d) => a + d.sumEur, 0);
-  const providerCount = providerSubs.reduce((a, d) => a + d.awardCount, 0);
+  // The €/awards "Shade by" toggle drives both the world choropleth shading and
+  // the leaderboard ranking, so it is always available in a funding lens.
+  const showMetricToggle = true;
 
-  // The list to render: a provider's top receivers when drilled in, else the
-  // scope leaderboard. Re-sort by award count when the count metric is active
-  // (the rows are top-50 by amount; this re-orders that set — a documented
-  // approximation, exact top-by-count would need a separate rollup).
-  const activeLeaderboard = fundingProviderId ? providerReceivers : leaderboard;
+  // Rank by award count when that metric is active (rows are top-50 by amount;
+  // this re-orders that set — exact top-by-count would need a separate rollup).
   const displayLeaderboard =
-    subdivisionMetric === "count" && showMetricToggle
-      ? [...activeLeaderboard].sort((a, b) => b.awardCount - a.awardCount)
-      : activeLeaderboard;
+    subdivisionMetric === "count"
+      ? [...leaderboard].sort((a, b) => b.awardCount - a.awardCount)
+      : leaderboard;
   const selectedEntity = selectedId
-    ? (activeLeaderboard.find((e) => e.entityId === selectedId) ?? null)
+    ? (leaderboard.find((e) => e.entityId === selectedId) ?? null)
     : null;
 
-  const Icon = fundingProviderId
-    ? ArrowDownToLine
-    : view === "received"
-      ? ArrowDownToLine
-      : ArrowUpFromLine;
-  const title = view === "received" ? "Money received" : "Money awarded";
   const verb = view === "received" ? "received" : "paid out";
   const entityNoun = view === "received" ? "recipients" : "funders";
 
-  // Provider drill-down overrides the chrome: the card becomes "where THIS
-  // funder's money flows" + its top receivers.
-  const headerTitle = providerFunder ? providerFunder.shortName : title;
-  const heroSumEur = fundingProviderId ? providerSumEur : (scopeRow?.sumEur ?? 0);
-  const heroCount = fundingProviderId
-    ? providerCount
-    : (scopeRow?.awardCount ?? 0);
-  const heroMedian = fundingProviderId ? null : (scopeRow?.medianEur ?? null);
-  const heroVerb = fundingProviderId ? "flows to Norwegian recipients" : verb;
+  const heroSumEur = scopeRow?.sumEur ?? 0;
+  const heroCount = scopeRow?.awardCount ?? 0;
+  const heroMedian = scopeRow?.medianEur ?? null;
+  const heroVerb = verb;
 
   return (
-    <div
-      className={cn(
-        "absolute left-4 top-4 z-20 flex flex-col bg-background rounded-2xl dash-panel border overflow-hidden w-80 sm:w-[420px]",
-        "animate-in fade-in slide-in-from-top-2 duration-300",
-        listExpanded ? "bottom-4" : "max-h-[calc(100%-2rem)]",
-      )}
-    >
-      {/* Mode switch — sits with the card it controls */}
-      <ModeSwitchInline className="mx-3 mt-3" />
-
-      {/* Header + hero */}
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Hero + controls — the drawer header shows the lens title */}
       <div className="px-3 pt-3 pb-2 border-b">
-        <div className="flex items-start justify-between mb-2">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <SidebarTrigger className="size-7 -ml-1 shrink-0" />
-            <h2 className="font-semibold text-base flex items-center gap-2 truncate">
-              <Icon className="size-4 shrink-0" />
-              <span className="truncate">{headerTitle}</span>
-            </h2>
-          </div>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              onClick={() => setGrantsListExpanded(!listExpanded)}
-              aria-label={listExpanded ? "Collapse list" : "Expand list"}
-              title={listExpanded ? "Collapse list" : "Expand list"}
-            >
-              {listExpanded ? (
-                <ChevronUp className="size-4" />
-              ) : (
-                <ChevronDown className="size-4" />
-              )}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7 sm:hidden"
-              onClick={() => setPanelVisible(false)}
-              aria-label="Close panel"
-            >
-              <X className="size-4" />
-            </Button>
-          </div>
-        </div>
-
         {/* Hero number */}
         {aggregate == null ? (
           <div className="py-3 text-sm text-muted-foreground">Loading funding…</div>
@@ -315,73 +208,27 @@ export function FundingCard({ view }: { view: FundingView }) {
                 {COMPLETENESS_CHIP[coverage.completeness].label}
               </span>
             )}
-            {fundingProviderId ? (
-              <button
-                type="button"
-                onClick={() => setFundingProvider(null)}
-                className="inline-flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-[11px] font-medium hover:bg-accent"
-                aria-label="Clear provider drill-down"
-              >
-                provider flow
-                <X className="size-3" />
-              </button>
-            ) : scope === "ALL" ? (
+            {scope === "ALL" ? (
               <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                 <MapPin className="size-3" /> All countries
               </span>
             ) : (
               <button
                 type="button"
-                onClick={() => setFundingScope(isSubdivScope ? "NO" : null)}
+                onClick={() => setFundingScope(null)}
                 className="inline-flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-[11px] font-medium hover:bg-accent"
-                aria-label={
-                  isSubdivScope
-                    ? `Back to Norway from ${scope}`
-                    : `Clear ${countryNameOf(funders, scope)} filter`
-                }
+                aria-label={`Clear ${countryNameOf(funders, scope)} filter`}
               >
-                {isFylkeScope
-                  ? subdivisionLabel(scope)
-                  : isKommuneScope
-                    ? `Kommune ${scope}`
-                    : countryNameOf(funders, scope)}
+                {countryNameOf(funders, scope)}
                 <X className="size-3" />
               </button>
             )}
           </div>
         </div>
 
-        {/* Granularity toggle — Fylke ↔ Kommune choropleth on the map */}
-        {showMetricToggle && (
-          <div className="mt-2 flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              Level
-            </span>
-            <div className="inline-flex items-center rounded-lg bg-sidebar-accent p-0.5">
-              {(
-                [
-                  ["fylke", "Fylke"],
-                  ["kommune", "Kommune"],
-                ] as const
-              ).map(([lvl, label]) => (
-                <button
-                  key={lvl}
-                  type="button"
-                  onClick={() => setSubdivisionLevel(lvl)}
-                  aria-pressed={subdivisionLevel === lvl}
-                  className={cn(
-                    "rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors",
-                    subdivisionLevel === lvl
-                      ? "bg-background shadow-sm"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Fylke ↔ Kommune granularity toggle removed — the Norway sub-national
+            drill-down is shelved; the funding lens is a global country choropleth.
+            (Store plumbing + geometry retained for an easy revive — see git.) */}
 
         {/* € / count metric toggle — drives the choropleth shading + ranks */}
         {showMetricToggle && (
@@ -421,33 +268,17 @@ export function FundingCard({ view }: { view: FundingView }) {
         )}
       </div>
 
-      {/* Collapsible leaderboard — prominent collapse control */}
-      <Collapsible
-        open={listExpanded}
-        onOpenChange={setGrantsListExpanded}
-        className={cn("flex flex-col min-h-0", listExpanded && "flex-1")}
-      >
-        <CollapsibleTrigger className="flex items-center gap-2 w-full px-3 py-2 border-b text-xs font-medium hover:bg-accent/50 transition-colors">
-          {listExpanded ? (
-            <ChevronDown className="size-4" />
-          ) : (
-            <ChevronRight className="size-4" />
-          )}
-          <span className="capitalize">
-            {fundingProviderId ? "Top receivers" : `Top ${entityNoun}`}
-          </span>
-          <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
-            {listExpanded ? "Hide" : "Show"}
-          </span>
-        </CollapsibleTrigger>
-
-        <CollapsibleContent className="flex-1 min-h-0 overflow-hidden data-[state=closed]:hidden">
-          <div className="h-full overflow-y-auto">
-            <div className="p-2 space-y-1.5">
-              {selectedEntity ? (
+      {/* Leaderboard (scrolls within the drawer) */}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b px-3 py-2 text-xs font-medium">
+          <span className="capitalize">Top {entityNoun}</span>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="p-2 space-y-1.5">
+            {selectedEntity ? (
                 <EntityDetail
                   entity={selectedEntity}
-                  view={fundingProviderId ? "received" : view}
+                  view={view}
                   currency={displayCurrency}
                   onBack={() => selectFundingEntity(null)}
                 />
@@ -455,39 +286,24 @@ export function FundingCard({ view }: { view: FundingView }) {
                 <div className="py-10 text-center text-xs text-muted-foreground">
                   {aggregate == null
                     ? "Loading…"
-                    : fundingProviderId
-                      ? "No mapped receivers for this funder yet."
-                      : `No ${entityNoun} for this selection yet.`}
+                    : `No ${entityNoun} for this selection yet.`}
                 </div>
               ) : (
-                displayLeaderboard.map((e) => {
-                  // In the awarded view, a funder row drills into that provider's
-                  // money-flow (national or regional). Otherwise show entity detail.
-                  const drillProvider =
-                    !fundingProviderId &&
-                    view === "awarded" &&
-                    e.entityType === "funder";
-                  return (
-                    <LeaderboardRow
-                      key={`${e.entityType}:${e.entityId}`}
-                      entity={e}
-                      currency={displayCurrency}
-                      metric={subdivisionMetric}
-                      showMetric={showMetricToggle}
-                      onClick={() =>
-                        drillProvider
-                          ? setFundingProvider(e.entityId)
-                          : selectFundingEntity(e.entityId)
-                      }
-                    />
-                  );
-                })
+                displayLeaderboard.map((e) => (
+                  <LeaderboardRow
+                    key={`${e.entityType}:${e.entityId}`}
+                    entity={e}
+                    currency={displayCurrency}
+                    metric={subdivisionMetric}
+                    showMetric={showMetricToggle}
+                    onClick={() => selectFundingEntity(e.entityId)}
+                  />
+                ))
               )}
             </div>
           </div>
-        </CollapsibleContent>
-      </Collapsible>
-    </div>
+        </div>
+      </div>
   );
 }
 
