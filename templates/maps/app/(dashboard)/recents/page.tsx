@@ -1,14 +1,24 @@
 "use client";
 
+import * as React from "react";
 import { MapView } from "@/components/dashboard/map-view";
-import { MapsPanel } from "@/components/dashboard/maps-panel";
+import { GlobeSearch } from "@/components/dashboard/globe-search";
+import { ResultsDrawer } from "@/components/dashboard/results-drawer";
 import { MapControls } from "@/components/dashboard/map-controls";
+import { useGrantsStore } from "@/store/maps-store";
 
 export default function RecentsPage() {
+  const setResultsOpen = useGrantsStore((s) => s.setResultsOpen);
+  // The history view exists to show the list, so open the drawer on arrival.
+  React.useEffect(() => {
+    setResultsOpen(true);
+  }, [setResultsOpen]);
+
   return (
     <div className="relative h-full w-full overflow-hidden">
       <MapView />
-      <MapsPanel mode="recents" />
+      <GlobeSearch showModes={false} />
+      <ResultsDrawer mode="recents" />
       <MapControls />
     </div>
   );
